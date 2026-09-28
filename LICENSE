@@ -1,21 +1,65 @@
-MIT License
+STRICT PROPRIETARY & NON-COMMERCIAL SOURCE LICENSE
+(Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International with Statutory Enforcement)
 
-Copyright (c) 2026 Shreyas J. and Contributors
+Copyright (c) 2026 Shreyas J., Dhanush Gowda S., Shreedhar Shivappa Hegade, Ritun Jain.
+All Rights Reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Project Name: GEOAuditor
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+================================================================================
+TERMS OF USE, INTELLECTUAL PROPERTY NOTICE & LEGAL ENFORCEMENT
+================================================================================
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+1. RESTRICTIONS ON USE AND COPYING
+   The software, source code, documentation, mathematical scoring algorithms, and
+   architectural specifications comprising "GEOAuditor" are the exclusive intellectual
+   property of the copyright holders. No person or organization may copy, reproduce,
+   distribute, publish, publicly display, sublicense, or transmit this software or any
+   portion thereof, in source code or binary form, without prior explicit written
+   permission from the authors.
+
+2. STRICT PROHIBITION ON COMMERCIAL EXPLOITATION
+   Commercial use of this software, in whole or in part, is strictly prohibited. This
+   includes, without limitation, selling, licensing, renting, charging for access,
+   integrating into proprietary SaaS platforms, or offering as a paid auditing service
+   or agency deliverable without an express commercial license granted in writing by
+   the copyright holders.
+
+3. PROHIBITION OF DERIVATIVE WORKS & REVERSE ENGINEERING
+   You may not alter, transform, adapt, translate, decompile, disassemble, or reverse-
+   engineer this software, nor create derivative works, modified versions, or competitive
+   systems based on the algorithms, scoring weights, or code structures of GEOAuditor.
+
+4. ACADEMIC CITATION & NON-COMMERCIAL REFERENCE
+   Academic study, peer evaluation, and educational reference are permitted solely under
+   the condition of full attribution to the authors and The National Institute of
+   Engineering (NIE), Mysuru, in compliance with the citation specification in README.md.
+   Such reference does not convey any right to redistribute or commercialize the code.
+
+5. STATUTORY PROSECUTION & LEGAL JURISDICTION
+   Any unauthorized copying, distribution, commercial utilization, plagiarism, or
+   infringement of this intellectual property will be prosecuted to the maximum extent
+   permitted by law.
+
+   Remedies sought will include statutory civil damages, injunctive relief, disgorgement
+   of profits, and criminal prosecution under:
+   (a) The Copyright Act, 1957 (Government of India)
+   (b) The Information Technology Act, 2000 (Government of India)
+   (c) The Indian Penal Code (IPC) / Bharatiya Nyaya Sanhita (BNS)
+   (d) Berne Convention for the Protection of Literary and Artistic Works
+   (e) Universal Copyright Convention and applicable international intellectual property treaties
+
+6. GOVERNING LAW & EXCLUSIVE JURISDICTION
+   This license, and any dispute, controversy, proceeding, or claim of whatever nature
+   arising out of or in any way relating to this software or its unauthorized use, shall
+   be governed by and construed in accordance with the laws of the Republic of India.
+   The parties irrevocably submit to the exclusive jurisdiction of the competent courts
+   in the State of Karnataka, India (including the Courts of Mysuru and Bengaluru, Karnataka)
+   for the resolution of any legal proceedings.
+
+DISCLAIMER:
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM OUT OF OR IN CONNECTION WITH THE SOFTWARE
+OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

@@ -1,6 +1,6 @@
 # GEOAuditor: A Market-Aware Multilingual Framework for Auditing and Improving Brand Visibility in Generative AI Search
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: CC BY-NC-ND 4.0](https://img.shields.io/badge/License-CC%20BY--NC--ND%204.0%20(Strict)-red.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-informational.svg)](https://www.python.org/)
 [![Framework: FastAPI](https://img.shields.io/badge/Backend-FastAPI-success.svg)](https://fastapi.tiangolo.com/)
 [![Frontend: Next.js 16](https://img.shields.io/badge/Frontend-Next.js%2016-black.svg)](https://nextjs.org/)
@@ -11,7 +11,7 @@
 
 As conversational large language models (LLMs) and generative search engines (e.g., Google Search Generative Experience, OpenAI Search, Perplexity AI) increasingly mediate web information retrieval, traditional Search Engine Optimization (SEO) fails to guarantee digital visibility. Generative Engine Optimization (GEO) requires auditing both machine-readable technical accessibility and probabilistic brand presence in natural language answers.
 
-**GEOAuditor** is an open-source, empirical auditing framework and remediation engine. Designed according to research conducted at **The National Institute of Engineering (NIE), Mysuru**, this framework operationalizes GEO principles by combining automated technical signal validation, single-shot consolidated generative model simulation across multilingual buyer intents (English, Hindi, and Kannada), attribution metrics (Mention Rate, Recommendation Rate, Domain Citation Rate, and Competitor Share of Voice), and dynamic synthesis of RFC 9309 compliant `robots.txt` and Jeremy Howard (2024) `llmstxt.org` context files.
+**GEOAuditor** is a specialized empirical auditing framework and remediation engine. Designed according to research conducted at **The National Institute of Engineering (NIE), Mysuru**, this framework operationalizes GEO principles by combining automated technical signal validation, single-shot consolidated generative model simulation across multilingual buyer intents (English, Hindi, and Kannada), attribution metrics (Mention Rate, Recommendation Rate, Domain Citation Rate, and Competitor Share of Voice), and dynamic synthesis of RFC 9309 compliant `robots.txt` and Jeremy Howard (2024) `llmstxt.org` context files.
 
 ---
 
@@ -136,7 +136,6 @@ GEOAuditor/
 |   |-- ISSUE_TEMPLATE/
 |   |   |-- bug_report.md            # Formal bug report template
 |   |   `-- feature_request.md       # Research enhancement proposal template
-|   |-- dependabot.yml               # Automated dependency vulnerability management
 |   `-- pull_request_template.md     # Pull request verification checklist
 |-- backend/
 |   |-- app/
@@ -316,9 +315,9 @@ Complete, step-by-step instructions for deploying GEOAuditor publicly are docume
 If you use GEOAuditor or incorporate its multilingual framework into your academic research, please cite:
 
 ```bibtex
-@misc{gowda2026geoauditor,
-  title={A Market-Aware Multilingual Framework for Auditing and Improving Brand Visibility in Generative AI Search},
-  author={Gowda S., Dhanush and J., Shreyas and Hegade, Shreedhar Shivappa and Jain, Ritun},
+@misc{geoauditor2026,
+  title={GEOAuditor: A Market-Aware Multilingual Framework for Auditing and Improving Brand Visibility in Generative AI Search},
+  author={Shreyas, J. and Gowda S., Dhanush and Hegade, Shreedhar Shivappa and Jain, Ritun},
   year={2026},
   institution={The National Institute of Engineering (NIE), Mysuru},
   department={Department of Computer Science and Engineering (AI & ML)},
@@ -338,6 +337,13 @@ If you use GEOAuditor or incorporate its multilingual framework into your academ
 
 ---
 
-## License
+## License & Legal Jurisdiction
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under a **Strict Proprietary & Non-Commercial License (Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International with Statutory Enforcement)**.
+
+* **Strict Prohibition on Copying & Derivative Works**: Unauthorized copying, modification, redistribution, reverse-engineering, or mirroring of this software, its scoring algorithms, or its architecture without prior explicit written permission is strictly prohibited.
+* **No Commercial Exploitation**: Commercial use, monetized distribution, or integration into proprietary platforms is forbidden without an express commercial license granted in writing by the authors.
+* **Statutory Legal Prosecution**: Any infringement or unauthorized reproduction will be prosecuted to the maximum extent permitted under **The Copyright Act, 1957 (India)**, the **Information Technology Act, 2000 (India)**, and applicable international copyright treaties.
+* **Exclusive Legal Jurisdiction**: All disputes, claims, and actions are irrevocably subject to the exclusive jurisdiction of the competent courts in the **State of Karnataka, India** (including the Courts of Mysuru and Bengaluru, Karnataka).
+
+For the full legal terms, refer to [LICENSE](LICENSE).
