@@ -261,23 +261,13 @@ CRITICAL SPECIFICATION REQUIREMENTS (llmstxt.org / Howard 2024):
     ]
 
     if api_key and "your_gemini_api_key" not in api_key:
-        from google.genai import types
-        client = genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(
-                timeout=5000,
-                retry_options=types.HttpRetryOptions(attempts=1),
-            ),
-        )
+        client = genai.Client(api_key=api_key)
         for model_name in candidate_models:
             try:
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        client.models.generate_content,
-                        model=model_name,
-                        contents=prompt,
-                    ),
-                    timeout=5.0,
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model_name,
+                    contents=prompt,
                 )
                 raw_text = (response.text or "").strip()
                 if raw_text.startswith("```markdown"):

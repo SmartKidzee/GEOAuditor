@@ -224,13 +224,7 @@ def generate_fallback_ai_response(brand_name: str, domain: str, category: str, i
 from google.genai import types
 
 def get_fast_genai_client(api_key: str) -> genai.Client:
-    return genai.Client(
-        api_key=api_key,
-        http_options=types.HttpOptions(
-            timeout=5000,
-            retry_options=types.HttpRetryOptions(attempts=1),
-        ),
-    )
+    return genai.Client(api_key=api_key)
 
 
 async def execute_single_gemini_batch(
@@ -269,14 +263,10 @@ Return ONLY raw JSON, with no markdown code fences."""
 
     for model_name in model_order:
         try:
-            # Single call with 5s timeout to keep UI super fast
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    client.models.generate_content,
-                    model=model_name,
-                    contents=prompt,
-                ),
-                timeout=5.0,
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=model_name,
+                contents=prompt,
             )
             raw_text = (response.text or "").strip()
             if raw_text.startswith("```json"):
