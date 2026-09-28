@@ -152,3 +152,16 @@ async def get_audit_report(job_id: str):
 async def list_recent_audits(limit: int = 10):
     """Returns recent real audits run on the platform."""
     return get_recent_jobs(limit=limit)
+
+
+if __name__ == "__main__":
+    import os
+    import uvicorn
+
+    raw_port = os.getenv("PORT", "8000")
+    try:
+        port = int(raw_port)
+    except ValueError:
+        port = 8000
+
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port)
