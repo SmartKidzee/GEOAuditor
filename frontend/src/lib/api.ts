@@ -1,10 +1,19 @@
 import { JobStatusResponse, ReportData, RecentJobItem } from "./types";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL ||
-  (typeof window !== "undefined"
+function getApiBase(): string {
+  let url = process.env.NEXT_PUBLIC_API_URL?.trim();
+  if (url) {
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      url = `https://${url}`;
+    }
+    return url.replace(/\/+$/, "");
+  }
+  return typeof window !== "undefined"
     ? "http://localhost:8000"
-    : "http://127.0.0.1:8000");
+    : "http://127.0.0.1:8000";
+}
+
+const API_BASE = getApiBase();
 
 async function safeFetch(url: string, options?: RequestInit) {
   try {
