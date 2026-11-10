@@ -49,10 +49,10 @@ Search behavior is shifting from "10 blue links" to direct AI-generated answers 
 ## 7. Scoring Model
 
 ```
-Composite GEO Score = 0.40 × Technical Score + 0.60 × AI Visibility Score
+Composite GEO Score = 0.25 × Technical Score + 0.75 × AI Visibility Score
 ```
 
-AI Visibility is weighted higher because actual representation in AI answers is the end goal — technical readiness is a means to that end.
+AI Visibility is the headline measurement; technical readiness is the diagnostic that explains why visibility is high or low. If the AI probes cannot run, the report says so and shows the technical score alone — no AI data is estimated.
 
 **Technical Score inputs:**
 - Metadata & heading quality (title, description, H1–H6 structure fitting cleanly into an AI context window)
@@ -60,11 +60,11 @@ AI Visibility is weighted higher because actual representation in AI answers is 
 - Crawlability (robots.txt and sitemap.xml don't block AI bots like GPTBot / Google-Extended)
 - Semantic HTML (proper use of `<article>`, `<section>`, etc.)
 
-**AI Visibility Score inputs — 4 query intents:**
-- **Brand Discovery** — "Who is [Brand]?"
-- **Category Search** — "What are the best tools in [Industry]?"
-- **Comparative Analysis** — "[Brand] vs [Competitor]"
-- **Market Alternatives** — "Top alternatives to [Market Leader]?"
+**AI Visibility Score inputs — separate, repeated Gemini probes:**
+- **Organic discovery (unbranded)** — "What are the best [category]?" asked without naming the brand, repeated in English and asked in Hindi and Kannada. Measures whether the brand surfaces on its own, at what rank, and with which domain.
+- **Brand perception** — "What is [Brand] ([domain])?" answered from the model's own knowledge, then fact-checked against the site: accurate / partial / hallucinated / unknown.
+- **Competitors and share of voice** come from the brands the models actually list, not a preset catalogue.
+- **Honest failure** — if a call fails, the probe is reported as unavailable and excluded; nothing is simulated.
 
 **Issue severity categories:**
 - 🔴 **Critical** — blocking AI bots, completely missing JSON-LD schema

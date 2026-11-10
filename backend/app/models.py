@@ -54,29 +54,66 @@ class TechnicalFindings(BaseModel):
 
 
 class AiVisibilityQueryFinding(BaseModel):
-    intent_name: str  # "Brand Discovery", "Category Search", "Comparative Analysis", "Market Alternatives", "Indic Multilingual (Hindi)", "Indic Multilingual (Kannada)"
-    query: str
-    mentioned: bool
-    sentiment: str  # "positive", "neutral", "negative", "not_mentioned"
-    position: str  # "primary", "listed", "omitted"
-    score: float
-    evidence_excerpt: str
-    raw_response: str
-    recommended: bool = False
-    cited_brand_domain: bool = False
+    """One executed probe (one real LLM call) and what was measured from its answer."""
+
+    probe_id: str = ""  # unique id, e.g. "organic_en#2"
+    probe_type: str = "organic_discovery"  # "organic_discovery" | "brand_perception"
+    branded: bool = False  # True when the brand name was given to the model in the prompt
+    run_index: int = 1
+    intent_name: str = ""  # e.g. "Organic Discovery (English)", "Brand Perception"
+    query: str = ""
+    status: str = "ok"  # "ok" | "unavailable" (LLM call failed; excluded from scoring)
+    error: Optional[str] = None
+    model_used: str = ""
+    mentioned: bool = False
+    rank: Optional[int] = None  # position in the model's ranked list (1 = first)
+    sentiment: str = "not_mentioned"  # "positive" | "neutral" | "negative" | "not_mentioned"
+    position: str = "omitted"  # "primary" (rank<=3) | "listed" | "omitted"
+    score: float = 0.0
+    evidence_excerpt: str = ""
+    raw_response: str = ""
+    recommended: bool = False  # ranked in the model's top 3
+    cited_brand_domain: bool = False  # the model attached the brand's official domain
     cited_competitors: List[str] = Field(default_factory=list)
     language: str = "en"
     language_name: str = "English"
 
 
+class PerceptionFinding(BaseModel):
+    """What the model believes the brand is, compared against facts taken from the site."""
+
+    verdict: str = "unavailable"  # "accurate" | "partial" | "hallucinated" | "unknown" | "unavailable"
+    query: str = ""
+    model_known_brand: bool = False
+    model_description: str = ""
+    site_facts: Dict[str, Any] = Field(default_factory=dict)
+    wrong_claims: List[str] = Field(default_factory=list)
+    missing_facts: List[str] = Field(default_factory=list)
+    judged_by: str = ""  # "gemini" | "heuristic"
+    score: float = 0.0  # 0-100, used as a score component
+    explanation: str = ""
+
+
 class AiVisibilityFindings(BaseModel):
-    score: float
-    queries: List[AiVisibilityQueryFinding]
-    mention_rate: float = 0.0
-    recommendation_rate: float = 0.0
-    brand_citation_rate: float = 0.0
+    score: Optional[float] = None  # None when the AI probes could not run
+    available: bool = True
+    unavailable_reason: Optional[str] = None
+    coverage: float = 1.0  # fraction of planned probes that returned a usable answer
+    queries: List[AiVisibilityQueryFinding] = Field(default_factory=list)
+    mention_rate: float = 0.0  # % of English organic runs in which the brand surfaced unprompted
+    recommendation_rate: float = 0.0  # % of English organic runs where it ranked in the top 3
+    brand_citation_rate: float = 0.0  # % of English organic runs where its domain was given
+    organic_runs: int = 0  # successful English organic runs
+    organic_mentions: int = 0  # ...of which the brand appeared
     competitor_share_of_voice: Dict[str, float] = Field(default_factory=dict)
     multilingual_breakdown: List[Dict[str, Any]] = Field(default_factory=list)
+    perception: Optional[PerceptionFinding] = None
+    score_components: Dict[str, Any] = Field(default_factory=dict)
+    category_used: str = ""
+    category_source: str = ""  # "user" | "gemini" | "heuristic"
+    engine_used: str = ""
+    notes: List[str] = Field(default_factory=list)
+    methodology: str = ""
 
 
 class GeneratedSolution(BaseModel):
@@ -97,7 +134,9 @@ class ReportData(BaseModel):
     brand_name: str
     composite_score: float
     technical_score: float
-    ai_visibility_score: float
+    ai_visibility_score: Optional[float] = None
+    ai_visibility_available: bool = True
+    score_note: Optional[str] = None
     weight_technical: float
     weight_ai_visibility: float
     technical_findings: TechnicalFindings
@@ -111,6 +150,11 @@ class ReportData(BaseModel):
 
 class AuditCreateRequest(BaseModel):
     url: str
+    # Optional overrides. The brand name and category are normally inferred from the site;
+    # if that inference is wrong, the category in particular decides what the unbranded
+    # discovery prompts ask, so the user can correct it.
+    brand_name: Optional[str] = None
+    category: Optional[str] = None
 
 
 class AuditCreateResponse(BaseModel):

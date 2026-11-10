@@ -29,11 +29,23 @@ async function safeFetch(url: string, options?: RequestInit) {
   }
 }
 
-export async function createAudit(url: string): Promise<{ job_id: string; status: string }> {
+export interface AuditOverrides {
+  brand_name?: string;
+  category?: string;
+}
+
+export async function createAudit(
+  url: string,
+  overrides: AuditOverrides = {}
+): Promise<{ job_id: string; status: string }> {
+  const body: Record<string, string> = { url };
+  if (overrides.brand_name?.trim()) body.brand_name = overrides.brand_name.trim();
+  if (overrides.category?.trim()) body.category = overrides.category.trim();
+
   const res = await safeFetch(`${API_BASE}/api/audit`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url }),
+    body: JSON.stringify(body),
   });
 
   const data = await res.json();

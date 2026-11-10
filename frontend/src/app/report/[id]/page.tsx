@@ -185,7 +185,24 @@ export default function ReportPage() {
           domain={report.domain}
           brandName={report.brand_name}
           createdAt={report.created_at}
+          weightTechnical={report.weight_technical}
+          weightAiVisibility={report.weight_ai_visibility}
+          aiAvailable={report.ai_visibility_available !== false}
         />
+
+        {/* Honest-measurement banner: shown when the AI probes could not run */}
+        {report.ai_visibility_available === false && (
+          <div className="flex items-start gap-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 rounded-xl p-4 text-xs text-amber-900 dark:text-amber-200">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+            <div>
+              <div className="font-bold">AI visibility was not measured</div>
+              <p className="mt-0.5 leading-relaxed">
+                {report.score_note ||
+                  "The AI probes could not run, so the composite score reflects technical readiness only. No AI data was estimated."}
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Sub-scores: Technical vs AI Visibility */}
         <SubScoreCard

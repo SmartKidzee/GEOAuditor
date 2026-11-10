@@ -179,7 +179,7 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
                 {report.composite_score}
                 <span className="text-sm font-normal text-zinc-400">/100</span>
               </div>
-              <div className="text-[11px] text-zinc-500 mt-1">40% Technical + 60% AI Visibility</div>
+              <div className="text-[11px] text-zinc-500 mt-1">{report.weight_ai_visibility > 0 ? `${Math.round(report.weight_technical * 100)}% Technical + ${Math.round(report.weight_ai_visibility * 100)}% AI Visibility` : "Technical readiness only (AI visibility not measured)"}</div>
             </div>
 
             <div className="p-5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-center print:border-zinc-300">
@@ -194,10 +194,10 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
             <div className="p-5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-center print:border-zinc-300">
               <div className="text-[11px] uppercase font-bold text-zinc-400 mb-1">AI Model Prominence</div>
               <div className="text-4xl font-black font-mono text-zinc-900 dark:text-zinc-50 print:text-black">
-                {report.ai_visibility_score}
-                <span className="text-sm font-normal text-zinc-400">/100</span>
+                {report.ai_visibility_score ?? "—"}
+                <span className="text-sm font-normal text-zinc-400">{report.ai_visibility_score === null ? " n/a" : "/100"}</span>
               </div>
-              <div className="text-[11px] text-zinc-500 mt-1">Google Gemini &amp; Indic Benchmarks</div>
+              <div className="text-[11px] text-zinc-500 mt-1">Unbranded probes · Gemini</div>
             </div>
           </div>
 
@@ -209,28 +209,28 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
             </h3>
             <div className="grid grid-cols-3 gap-3 text-xs">
               <div className="p-3.5 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 print:bg-zinc-50 print:border-zinc-300">
-                <div className="text-zinc-500 text-[10px]">Brand Mention Rate</div>
+                <div className="text-zinc-500 text-[10px]">Organic Mention Rate</div>
                 <div className="text-lg font-bold font-mono text-zinc-900 dark:text-zinc-100 print:text-black">
-                  {report.ai_visibility_findings.mention_rate ?? 75}%
+                  {report.ai_visibility_score === null ? "—" : `${report.ai_visibility_findings.mention_rate ?? 0}%`}
                 </div>
               </div>
               <div className="p-3.5 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 print:bg-zinc-50 print:border-zinc-300">
-                <div className="text-zinc-500 text-[10px]">Recommendation Rate</div>
+                <div className="text-zinc-500 text-[10px]">Top-3 Rate</div>
                 <div className="text-lg font-bold font-mono text-zinc-900 dark:text-zinc-100 print:text-black">
-                  {report.ai_visibility_findings.recommendation_rate ?? 60}%
+                  {report.ai_visibility_score === null ? "—" : `${report.ai_visibility_findings.recommendation_rate ?? 0}%`}
                 </div>
               </div>
               <div className="p-3.5 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 print:bg-zinc-50 print:border-zinc-300">
                 <div className="text-zinc-500 text-[10px]">Domain Citation Rate</div>
                 <div className="text-lg font-bold font-mono text-zinc-900 dark:text-zinc-100 print:text-black">
-                  {report.ai_visibility_findings.brand_citation_rate ?? 40}%
+                  {report.ai_visibility_score === null ? "—" : `${report.ai_visibility_findings.brand_citation_rate ?? 0}%`}
                 </div>
               </div>
             </div>
           </div>
 
           {/* Multilingual Indic Language Matrix (Paper Section 3) */}
-          {report.ai_visibility_findings.multilingual_breakdown && (
+          {report.ai_visibility_findings.multilingual_breakdown && report.ai_visibility_findings.multilingual_breakdown.length > 0 && (
             <div>
               <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 print:text-zinc-700 mb-3 flex items-center gap-1.5">
                 <Languages className="w-3.5 h-3.5 text-purple-600" />
@@ -241,7 +241,7 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
                   <tr className="bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300">
                     <th className="p-2.5">Language &amp; Market</th>
                     <th className="p-2.5">Prompts Evaluated</th>
-                    <th className="p-2.5">Visibility Score</th>
+                    <th className="p-2.5">Mentioned</th>
                     <th className="p-2.5">Academic Reference</th>
                   </tr>
                 </thead>
@@ -250,7 +250,7 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
                     <tr key={i}>
                       <td className="p-2.5 font-medium">{item.market}</td>
                       <td className="p-2.5 font-mono">{item.queries_evaluated}</td>
-                      <td className="p-2.5 font-mono font-bold">{item.average_score}/100</td>
+                      <td className="p-2.5 font-mono font-bold">{item.status === "unavailable" ? "n/a" : `${item.mentions ?? 0}/${item.queries_evaluated}`}</td>
                       <td className="p-2.5 text-zinc-500 font-mono text-[11px]">{item.benchmark_reference}</td>
                     </tr>
                   ))}
@@ -260,7 +260,7 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
           )}
 
           {/* Competitor Share of Voice (Otterly.ai Benchmark) */}
-          {report.ai_visibility_findings.competitor_share_of_voice && (
+          {report.ai_visibility_findings.competitor_share_of_voice && Object.keys(report.ai_visibility_findings.competitor_share_of_voice).length > 0 && (
             <div>
               <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 print:text-zinc-700 mb-3 flex items-center gap-1.5">
                 <BarChart3 className="w-3.5 h-3.5 text-blue-600" />
@@ -273,7 +273,7 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
                     <div className="flex-1 h-2 bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-zinc-800 dark:bg-zinc-200"
-                        style={{ width: `${Math.min(100, Math.max(5, pct))}%` }}
+                        style={{ width: `${Math.min(100, Math.max(pct > 0 ? 3 : 0, pct))}%` }}
                       />
                     </div>
                     <span className="w-16 font-mono text-right font-bold">{pct}%</span>

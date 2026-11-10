@@ -1,21 +1,29 @@
 import logging
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from .models import JobStatus, ReportData
 from .database import update_job_status, save_audit_result
 from .scraper import crawl_site, ScrapeError
 from .analyzer import analyze_html_content
-from .ai_simulator import run_ai_visibility_queries, AiQueryError
+from .ai_simulator import run_ai_visibility_queries, build_site_facts
 from .scoring import calculate_audit_score
 from .generator import generate_solutions
 
 logger = logging.getLogger("geoauditor.orchestrator")
 
 
-async def run_audit_pipeline(job_id: str, target_url: str):
+async def run_audit_pipeline(
+    job_id: str,
+    target_url: str,
+    brand_name_override: Optional[str] = None,
+    category_override: Optional[str] = None,
+):
     """
-    Executes the full 7-step audit pipeline:
+    Executes the full audit pipeline:
     pending -> crawling -> extracting -> querying_ai -> scoring -> completed/failed
+
+    AI probe failures never fail the audit: the affected probes are reported as
+    "unavailable" and excluded from scoring (see ai_simulator / scoring).
     """
     try:
         # Step 1: Crawling
@@ -28,15 +36,33 @@ async def run_audit_pipeline(job_id: str, target_url: str):
         update_job_status(job_id, JobStatus.EXTRACTING)
         analyzed_content = analyze_html_content(crawl_data)
 
-        # Step 3: AI Query Simulator (Gemini API)
-        logger.info(f"[{job_id}] Stage 3: Querying AI visibility")
+        if brand_name_override and brand_name_override.strip():
+            analyzed_content["brand_name"] = brand_name_override.strip()
+
+        # Step 3: AI visibility probes (separate, repeated Gemini calls; see ai_simulator.py)
+        logger.info(f"[{job_id}] Stage 3: Running AI visibility probes")
         update_job_status(job_id, JobStatus.QUERYING_AI)
-        ai_visibility_raw = await run_ai_visibility_queries(
-            brand_name=analyzed_content["brand_name"],
-            domain=analyzed_content["domain"],
-            category=analyzed_content["category"],
-            meta_description=analyzed_content["metadata"]["meta_description"],
-        )
+        try:
+            ai_visibility_raw = await run_ai_visibility_queries(
+                brand_name=analyzed_content["brand_name"],
+                domain=analyzed_content["domain"],
+                category=analyzed_content["category"],
+                meta_description=analyzed_content["metadata"]["meta_description"],
+                site_facts=build_site_facts(analyzed_content),
+                category_override=category_override,
+            )
+        except Exception as ai_exc:  # noqa: BLE001 - never invent data, never fail the audit
+            logger.exception(f"[{job_id}] AI probes crashed: {ai_exc}")
+            ai_visibility_raw = {
+                "available": False,
+                "unavailable_reason": f"AI probes failed unexpectedly: {ai_exc}",
+                "queries": [],
+                "perception": None,
+                "category_used": category_override or analyzed_content["category"],
+                "category_source": "user" if category_override else "heuristic",
+                "engine_used": "",
+                "planned_probes": 0,
+            }
 
         # Step 4: Scoring Engine & Action Plan
         logger.info(f"[{job_id}] Stage 4: Scoring and Action Plan")
@@ -70,6 +96,8 @@ async def run_audit_pipeline(job_id: str, target_url: str):
             composite_score=scoring_results["composite_score"],
             technical_score=scoring_results["technical_score"],
             ai_visibility_score=scoring_results["ai_visibility_score"],
+            ai_visibility_available=scoring_results["ai_visibility_available"],
+            score_note=scoring_results["score_note"],
             weight_technical=scoring_results["weight_technical"],
             weight_ai_visibility=scoring_results["weight_ai_visibility"],
             technical_findings=scoring_results["technical_findings"],
@@ -102,9 +130,6 @@ async def run_audit_pipeline(job_id: str, target_url: str):
     except ScrapeError as se:
         logger.error(f"[{job_id}] Scrape failure: {str(se)}")
         update_job_status(job_id, JobStatus.FAILED, error_message=str(se))
-    except AiQueryError as aqe:
-        logger.error(f"[{job_id}] AI Query failure: {str(aqe)}")
-        update_job_status(job_id, JobStatus.FAILED, error_message=str(aqe))
     except Exception as e:
         logger.exception(f"[{job_id}] Unexpected audit pipeline failure: {str(e)}")
         update_job_status(job_id, JobStatus.FAILED, error_message=f"Audit failed: {str(e)}")

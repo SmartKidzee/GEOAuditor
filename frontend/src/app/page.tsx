@@ -13,6 +13,9 @@ export default function HomePage() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [brandOverride, setBrandOverride] = useState("");
+  const [categoryOverride, setCategoryOverride] = useState("");
   const [recentAudits, setRecentAudits] = useState<RecentJobItem[]>([]);
   const router = useRouter();
 
@@ -38,7 +41,10 @@ export default function HomePage() {
 
     setLoading(true);
     try {
-      const res = await createAudit(trimmed);
+      const res = await createAudit(trimmed, {
+        brand_name: brandOverride,
+        category: categoryOverride,
+      });
       router.push(`/audit/${res.job_id}`);
     } catch (err: any) {
       setError(err.message || "Failed to start audit. Please check your URL.");
@@ -63,7 +69,7 @@ export default function HomePage() {
           </h1>
 
           <p className="text-sm sm:text-base text-zinc-600 dark:text-zinc-400 max-w-xl mx-auto leading-relaxed">
-            GEOAuditor audits both sides at once: technical machine-readability (robots.txt, schema, context fit) and live AI presence across 4 real buyer queries via Google Gemini.
+            GEOAuditor audits both sides at once: technical machine-readability (robots.txt, schema, context fit) and whether AI recommends your brand unprompted, measured with repeated Gemini probes in English, Hindi and Kannada.
           </p>
         </div>
 
@@ -106,6 +112,48 @@ export default function HomePage() {
             </button>
           </form>
 
+          <div className="mt-2.5 text-center">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((v) => !v)}
+              className="text-xs text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 underline underline-offset-2 cursor-pointer"
+            >
+              {showAdvanced ? "Hide options" : "Brand or category detected wrongly? Set them manually"}
+            </button>
+          </div>
+
+          {showAdvanced && (
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 bg-white dark:bg-zinc-900 p-3 rounded-2xl border border-zinc-200 dark:border-zinc-800">
+              <label className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">
+                Brand name (optional)
+                <input
+                  type="text"
+                  value={brandOverride}
+                  onChange={(e) => setBrandOverride(e.target.value)}
+                  maxLength={80}
+                  placeholder="e.g. Razorpay"
+                  className="mt-1 w-full px-3 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-transparent text-sm font-normal text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 outline-none"
+                  disabled={loading}
+                />
+              </label>
+              <label className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">
+                Market category (optional)
+                <input
+                  type="text"
+                  value={categoryOverride}
+                  onChange={(e) => setCategoryOverride(e.target.value)}
+                  maxLength={80}
+                  placeholder="e.g. online payment gateways for businesses"
+                  className="mt-1 w-full px-3 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-transparent text-sm font-normal text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 outline-none"
+                  disabled={loading}
+                />
+              </label>
+              <p className="sm:col-span-2 text-[11px] text-zinc-400">
+                The category decides what the AI is asked (without naming your brand). It is inferred from your site if left blank.
+              </p>
+            </div>
+          )}
+
           {error && (
             <div className="mt-3 flex items-center gap-2 text-xs text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/30 p-3 rounded-lg border border-rose-200 dark:border-rose-900/50">
               <AlertCircle className="w-4 h-4 shrink-0" />
@@ -136,7 +184,7 @@ export default function HomePage() {
             <div className="bg-white dark:bg-zinc-900/60 p-4 rounded-xl border border-zinc-200/80 dark:border-zinc-800/80">
               <div className="font-mono text-zinc-400 text-[11px] mb-1">05 / 06</div>
               <div className="font-semibold text-zinc-900 dark:text-zinc-100">Gemini AI &amp; Scoring</div>
-              <p className="text-zinc-500 mt-1">Queries Gemini API for brand citations and calculates 40/60 GEO score.</p>
+              <p className="text-zinc-500 mt-1">Runs separate, repeated Gemini probes and calculates the 25/75 GEO score.</p>
             </div>
 
             <div className="bg-white dark:bg-zinc-900/60 p-4 rounded-xl border border-zinc-200/80 dark:border-zinc-800/80">
