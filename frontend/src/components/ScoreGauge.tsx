@@ -9,6 +9,9 @@ interface ScoreGaugeProps {
   domain: string;
   brandName: string;
   createdAt: string;
+  weightTechnical?: number;
+  weightAiVisibility?: number;
+  aiAvailable?: boolean;
 }
 
 export function ScoreGauge({
@@ -17,6 +20,9 @@ export function ScoreGauge({
   domain,
   brandName,
   createdAt,
+  weightTechnical = 0.25,
+  weightAiVisibility = 0.75,
+  aiAvailable = true,
 }: ScoreGaugeProps) {
   const [copied, setCopied] = useState(false);
 
@@ -27,6 +33,7 @@ export function ScoreGauge({
   };
 
   const getScoreLabel = (score: number) => {
+    if (!aiAvailable) return "Technical readiness only (AI not measured)";
     if (score >= 80) return "Optimized for AI Visibility";
     if (score >= 50) return "Moderate AI Visibility with Gaps";
     return "Critical AI Visibility & Technical Gaps";
@@ -133,10 +140,14 @@ export function ScoreGauge({
             Composite GEO Formula
           </div>
           <div className="font-mono text-[11px] bg-zinc-100 dark:bg-zinc-800/80 px-2 py-1 rounded inline-block">
-            0.40 × Technical + 0.60 × AI Visibility
+            {aiAvailable
+              ? `${weightTechnical.toFixed(2)} × Technical + ${weightAiVisibility.toFixed(2)} × AI Visibility`
+              : "Technical readiness only"}
           </div>
           <p className="text-[11px] leading-relaxed">
-            AI visibility weighted higher because actual presence in generative answers is the primary objective.
+            {aiAvailable
+              ? "AI visibility is weighted higher because actual presence in generative answers is the primary objective."
+              : "AI visibility could not be measured, so no AI data is included in this score."}
           </p>
         </div>
       </div>

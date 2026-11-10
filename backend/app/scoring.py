@@ -1,5 +1,12 @@
-from typing import Dict, Any, List, Tuple
-from .config import WEIGHT_TECHNICAL, WEIGHT_AI_VISIBILITY
+from collections import Counter
+from typing import Dict, Any, List, Optional, Tuple
+from .config import (
+    AI_VIS_WEIGHTS,
+    PERCEPTION_SCORE_CAPS,
+    WEIGHT_TECHNICAL,
+    WEIGHT_AI_VISIBILITY,
+)
+from .ranking import rank_score
 from .models import (
     CheckStatus,
     Severity,
@@ -8,6 +15,7 @@ from .models import (
     TechnicalFindings,
     AiVisibilityFindings,
     AiVisibilityQueryFinding,
+    PerceptionFinding,
 )
 
 
@@ -383,59 +391,351 @@ def score_semantic_html(semantic_data: Dict[str, Any]) -> Tuple[TechnicalSignalC
     ), issues
 
 
+# ======================================================================================
+# AI visibility scoring
+# ======================================================================================
+
+METHODOLOGY_TEXT = (
+    "Each probe is a separate LLM call. Organic discovery asks a category question without naming "
+    "the brand and checks whether the brand surfaces on its own; the English probe is repeated and "
+    "run with sampling enabled so the result is a rate, not a single yes/no. Hindi and Kannada "
+    "probes test the same question in those languages. A perception probe asks the model what it "
+    "believes the brand is and a judge compares the answer with facts from the site. Competitors and "
+    "share of voice come from the models' own ranked lists. A probe whose call fails is excluded from "
+    "scoring; nothing is estimated or generated to fill a gap. Gemini is used as a proxy for "
+    "generative engines in general; results for other engines (ChatGPT, Perplexity, Copilot) may differ."
+)
+
+MARKETS = {
+    "en": ("Global English", "English (en)", "Aggarwal et al. (GEO 2024)"),
+    "hi": ("Indic Hindi", "Hindi (hi)", "IndicGenBench / MILU"),
+    "kn": ("Indic Kannada (Regional)", "Kannada (kn)", "Indic QA Benchmark / NIE Mysuru"),
+}
+
+
+def _pct(numerator: float, denominator: float) -> float:
+    return round((numerator / denominator) * 100, 1) if denominator else 0.0
+
+
+def compute_ai_visibility_score(
+    *,
+    en_rate: Optional[float],
+    indic_rate: Optional[float],
+    rank_value: Optional[float],
+    perception_value: Optional[float],
+    citation_rate: Optional[float],
+    perception_verdict: Optional[str],
+) -> Tuple[float, Dict[str, Any], Optional[float]]:
+    """
+    Pure function. Every input is a 0..1 value or None (None = could not be measured, so the
+    component is dropped and the remaining weights are renormalised).
+
+    AI Visibility = sum(weight_i * value_i) / sum(weight_i over measured components) * 100,
+    then capped when the model does not know or misdescribes the brand (knowledge gating).
+
+    Returns (score, per-component breakdown, cap_applied or None).
+    """
+    values = {
+        "organic_discovery_en": en_rate,
+        "organic_discovery_indic": indic_rate,
+        "rank_prominence": rank_value,
+        "perception_accuracy": perception_value,
+        "domain_citation": citation_rate,
+    }
+    measured = {k: v for k, v in values.items() if v is not None}
+    total_weight = sum(AI_VIS_WEIGHTS[k] for k in measured)
+    if total_weight <= 0:
+        return 0.0, {}, None
+
+    breakdown: Dict[str, Any] = {}
+    raw_score = 0.0
+    for key, weight in AI_VIS_WEIGHTS.items():
+        value = values[key]
+        if value is None:
+            breakdown[key] = {"value": None, "weight": 0.0, "points": 0.0}
+            continue
+        effective_weight = weight / total_weight * 100
+        points = effective_weight * value
+        raw_score += points
+        breakdown[key] = {
+            "value": round(value * 100, 1),
+            "weight": round(effective_weight, 1),
+            "points": round(points, 1),
+        }
+
+    cap = PERCEPTION_SCORE_CAPS.get(perception_verdict or "")
+    cap_applied: Optional[float] = None
+    if cap is not None and raw_score > cap:
+        raw_score, cap_applied = cap, cap
+    return round(raw_score, 1), breakdown, cap_applied
+
+
+def build_ai_findings(raw: Dict[str, Any], brand_name: str) -> AiVisibilityFindings:
+    """Aggregates raw probe results into scored, explainable AI visibility findings."""
+    queries = [AiVisibilityQueryFinding(**q) for q in raw.get("queries", [])]
+    planned = int(raw.get("planned_probes") or len(queries))
+    ok = [q for q in queries if q.status == "ok"]
+    organic = [q for q in ok if q.probe_type == "organic_discovery"]
+    by_lang: Dict[str, List[AiVisibilityQueryFinding]] = {
+        lang: [q for q in organic if q.language == lang] for lang in ("en", "hi", "kn")
+    }
+    en = by_lang["en"]
+
+    perception_raw = raw.get("perception")
+    perception = PerceptionFinding(**perception_raw) if perception_raw else None
+
+    common: Dict[str, Any] = dict(
+        queries=queries,
+        coverage=round(len(ok) / planned, 2) if planned else 0.0,
+        perception=perception,
+        category_used=raw.get("category_used", ""),
+        category_source=raw.get("category_source", ""),
+        engine_used=raw.get("engine_used", ""),
+        methodology=METHODOLOGY_TEXT,
+    )
+
+    if not raw.get("available", True) or not en:
+        reason = raw.get("unavailable_reason") or "No English organic-discovery probe returned an answer."
+        return AiVisibilityFindings(
+            score=None,
+            available=False,
+            unavailable_reason=reason,
+            notes=["AI visibility was not scored. No AI data was estimated or substituted."],
+            **common,
+        )
+
+    # --- Rates -------------------------------------------------------------------------
+    en_mentions = sum(1 for q in en if q.mentioned)
+    en_rate = en_mentions / len(en)
+    en_recommended = sum(1 for q in en if q.recommended)
+    en_cited = sum(1 for q in en if q.cited_brand_domain)
+
+    indic_rates = [
+        sum(1 for q in runs if q.mentioned) / len(runs)
+        for lang, runs in by_lang.items()
+        if lang != "en" and runs
+    ]
+    indic_rate = sum(indic_rates) / len(indic_rates) if indic_rates else None
+
+    mentioned_runs = [q for q in organic if q.mentioned]
+    if mentioned_runs:
+        rank_value: Optional[float] = sum(rank_score(q.rank) for q in mentioned_runs) / len(mentioned_runs)
+    else:
+        rank_value = 0.0
+
+    perception_value = (
+        perception.score / 100 if perception and perception.verdict != "unavailable" else None
+    )
+    perception_verdict = perception.verdict if perception and perception.verdict != "unavailable" else None
+
+    score, components, cap_applied = compute_ai_visibility_score(
+        en_rate=en_rate,
+        indic_rate=indic_rate,
+        rank_value=rank_value,
+        perception_value=perception_value,
+        citation_rate=en_cited / len(en),
+        perception_verdict=perception_verdict,
+    )
+
+    # --- Share of voice (from the models' own lists) ------------------------------------
+    brand_mentions = len(mentioned_runs)
+    competitor_counts: Counter = Counter()
+    display_name: Dict[str, str] = {}
+    for q in organic:
+        for name in q.cited_competitors:
+            key = "".join(ch for ch in name.lower() if ch.isalnum())
+            if key:
+                competitor_counts[key] += 1
+                display_name.setdefault(key, name)
+    total_listings = brand_mentions + sum(competitor_counts.values())
+    sov: Dict[str, float] = {brand_name: _pct(brand_mentions, total_listings)}
+    for key, count in competitor_counts.most_common(5):
+        sov[display_name[key]] = _pct(count, total_listings)
+
+    # --- Per-language breakdown ---------------------------------------------------------
+    breakdown: List[Dict[str, Any]] = []
+    for lang in ("en", "hi", "kn"):
+        market, language_label, reference = MARKETS[lang]
+        runs = by_lang[lang]
+        mentions = sum(1 for q in runs if q.mentioned)
+        breakdown.append(
+            {
+                "market": market,
+                "language": language_label,
+                "average_score": round(sum(q.score for q in runs) / len(runs), 1) if runs else 0.0,
+                "queries_evaluated": len(runs),
+                "mentions": mentions,
+                "mention_rate": _pct(mentions, len(runs)),
+                "status": "measured" if runs else "unavailable",
+                "benchmark_reference": reference,
+            }
+        )
+
+    # --- Notes shown with the report ------------------------------------------------------
+    notes: List[str] = []
+    failed = planned - len(ok)
+    if failed > 0:
+        notes.append(f"{failed} of {planned} probes returned no answer and were excluded from scoring.")
+    if len(en) < 3:
+        notes.append(f"Only {len(en)} English organic run(s) completed; treat the rates as indicative.")
+    if cap_applied is not None:
+        notes.append(
+            f"Score capped at {cap_applied:g}: the model's perception of the brand was "
+            f"'{perception_verdict}', so the brand cannot be considered visible."
+        )
+    if perception and perception.judged_by == "heuristic":
+        notes.append("The perception judge call failed; a conservative keyword comparison was used instead.")
+    if common["category_source"] == "heuristic":
+        notes.append(
+            "The market category was inferred with a keyword heuristic. If it is inaccurate, "
+            "re-run the audit with a category override."
+        )
+
+    return AiVisibilityFindings(
+        score=score,
+        available=True,
+        coverage=common.pop("coverage"),
+        mention_rate=_pct(en_mentions, len(en)),
+        recommendation_rate=_pct(en_recommended, len(en)),
+        brand_citation_rate=_pct(en_cited, len(en)),
+        organic_runs=len(en),
+        organic_mentions=en_mentions,
+        competitor_share_of_voice=sov,
+        multilingual_breakdown=breakdown,
+        score_components=components,
+        notes=notes,
+        **common,
+    )
+
+
 def evaluate_ai_findings_for_action_plan(
-    ai_findings: Dict[str, Any],
+    f: AiVisibilityFindings,
     brand_name: str,
-    category: str,
+    blocked_ai_bots: Optional[List[str]] = None,
 ) -> List[ActionPlanItem]:
-    issues = []
-    queries = ai_findings.get("queries", [])
+    issues: List[ActionPlanItem] = []
 
-    for q in queries:
-        intent = q.get("intent_name", "")
-        mentioned = q.get("mentioned", False)
-        score = q.get("score", 0.0)
+    if not f.available:
+        issues.append(
+            ActionPlanItem(
+                severity=Severity.WARNING,
+                title="AI Visibility Could Not Be Measured",
+                detail=f"{f.unavailable_reason} The composite score reflects technical readiness only.",
+                related_check="AI Visibility",
+                recommendation="Check the Gemini API key and quota on the server, then re-run the audit. No estimated AI data is shown.",
+            )
+        )
+        return issues
 
-        if intent == "Brand Discovery" and not mentioned:
-            issues.append(
-                ActionPlanItem(
-                    severity=Severity.CRITICAL,
-                    title="Brand Unknown to Generative AI",
-                    detail=f"In the Brand Discovery check ('{q.get('query')}'), Gemini did not recognize {brand_name}.",
-                    related_check="AI Visibility — Brand Discovery",
-                    recommendation=f"Build verified brand entity signals: publish clear 'About' content, establish sameAs schema links to social and crunchbase profiles, and secure press mentions.",
-                )
+    n, k = f.organic_runs, f.organic_mentions
+    en_query = next((q.query for q in f.queries if q.probe_type == "organic_discovery" and q.language == "en"), "")
+
+    if k == 0:
+        issues.append(
+            ActionPlanItem(
+                severity=Severity.CRITICAL,
+                title="Not Recommended Unprompted by AI",
+                detail=f"Asked '{en_query}' without naming any brand, the AI did not surface {brand_name} in any of {n} run(s).",
+                related_check="AI Visibility — Organic Discovery",
+                recommendation="Increase topical authority in your niche: publish problem-solving content and case studies, earn third-party reviews and listings, and make the brand's category explicit on the homepage.",
             )
-        elif intent == "Category Search" and not mentioned:
-            issues.append(
-                ActionPlanItem(
-                    severity=Severity.WARNING,
-                    title=f"Omitted from Category Recommendations ({category})",
-                    detail=f"When asked '{q.get('query')}', the AI did not include {brand_name} in its suggested solutions.",
-                    related_check="AI Visibility — Category Search",
-                    recommendation="Increase topical authority in your niche by publishing comprehensive problem-solving content, case studies, and third-party software review listings.",
-                )
+        )
+    elif k < n:
+        issues.append(
+            ActionPlanItem(
+                severity=Severity.WARNING,
+                title="Inconsistent AI Visibility",
+                detail=f"{brand_name} appeared unprompted in {k} of {n} English runs. Visibility is unstable rather than established.",
+                related_check="AI Visibility — Organic Discovery",
+                recommendation="Strengthen repeated, consistent brand-to-category signals (homepage copy, schema, third-party mentions) so the brand surfaces reliably.",
             )
-        elif intent == "Comparative Analysis" and not mentioned:
-            issues.append(
-                ActionPlanItem(
-                    severity=Severity.WARNING,
-                    title="Absent from Comparative Alternatives",
-                    detail=f"Gemini did not feature {brand_name} when evaluating alternatives in {category}.",
-                    related_check="AI Visibility — Comparative Analysis",
-                    recommendation=f"Create direct comparison pages (e.g. '{brand_name} vs Competitor') with balanced, factual feature tables.",
+        )
+
+    if k > 0:
+        for item in f.multilingual_breakdown:
+            if item["language"].startswith("English") or item["status"] != "measured":
+                continue
+            if item["mentions"] == 0:
+                lang_name = item["language"].split(" ")[0]
+                issues.append(
+                    ActionPlanItem(
+                        severity=Severity.WARNING,
+                        title=f"Absent from {lang_name} AI Answers",
+                        detail=f"{brand_name} surfaced in English answers but not when the same question was asked in {lang_name}.",
+                        related_check=f"AI Visibility — {lang_name} Discovery",
+                        recommendation=f"Publish {lang_name} content (localized landing pages with hreflang) and seek {lang_name}-language mentions.",
+                    )
                 )
+
+    p = f.perception
+    if p and p.verdict == "unknown":
+        issues.append(
+            ActionPlanItem(
+                severity=Severity.CRITICAL,
+                title=f"AI Models Do Not Recognise {brand_name}",
+                detail="Asked directly what the brand is, the model said it does not know it.",
+                related_check="AI Visibility — Brand Perception",
+                recommendation="Build verified entity signals: Organization schema with sameAs links, a clear About page, a Wikidata/Crunchbase profile, and press coverage.",
             )
-        elif intent == "Market Alternatives" and score < 60:
-            issues.append(
-                ActionPlanItem(
-                    severity=Severity.OPPORTUNITY,
-                    title="Strengthen Market Alternatives Footprint",
-                    detail=f"Low prominence in market alternatives search for {category}.",
-                    related_check="AI Visibility — Market Alternatives",
-                    recommendation="Highlight unique differentiators and niche use-cases where your solution outperforms industry incumbents.",
-                )
+        )
+    elif p and p.verdict == "hallucinated":
+        claims = "; ".join(p.wrong_claims) or p.explanation
+        issues.append(
+            ActionPlanItem(
+                severity=Severity.CRITICAL,
+                title=f"AI Models Describe {brand_name} Incorrectly",
+                detail=f"The model's description contradicts the website. {claims}".strip(),
+                related_check="AI Visibility — Brand Perception",
+                recommendation="State what the brand is and does in one plain sentence on the homepage and in Organization schema, publish /llms.txt, and correct inaccurate third-party profiles.",
             )
+        )
+    elif p and p.verdict == "partial":
+        gaps = "; ".join(p.missing_facts) or p.explanation
+        issues.append(
+            ActionPlanItem(
+                severity=Severity.WARNING,
+                title=f"AI Description of {brand_name} Is Incomplete",
+                detail=f"The model knows the brand but its description is vague or missing key points. {gaps}".strip(),
+                related_check="AI Visibility — Brand Perception",
+                recommendation="Make key facts (what you offer, for whom, where) explicit in headings and structured data so models can restate them.",
+            )
+        )
+
+    competitors = [(name, pct) for name, pct in f.competitor_share_of_voice.items() if name != brand_name]
+    brand_share = f.competitor_share_of_voice.get(brand_name, 0.0)
+    if competitors and competitors[0][1] > brand_share and k < n:
+        top = ", ".join(f"{name} ({pct}%)" for name, pct in competitors[:3])
+        issues.append(
+            ActionPlanItem(
+                severity=Severity.OPPORTUNITY,
+                title="Competitors Dominate AI Answers",
+                detail=f"In the AI's own recommendation lists, {brand_name} holds {brand_share}% of mentions versus {top}.",
+                related_check="AI Visibility — Share of Voice",
+                recommendation=f"Create balanced comparison pages ('{brand_name} vs {competitors[0][0]}') and highlight differentiators and niche use-cases.",
+            )
+        )
+
+    if k > 0 and f.brand_citation_rate < 50:
+        issues.append(
+            ActionPlanItem(
+                severity=Severity.OPPORTUNITY,
+                title="Official Domain Rarely Attached to Mentions",
+                detail=f"When {brand_name} was recommended, the model supplied its official domain in only {f.brand_citation_rate}% of runs.",
+                related_check="AI Visibility — Domain Citation",
+                recommendation="Use the same brand name and canonical domain everywhere (schema, sameAs profiles, press) so models link the name to the site.",
+            )
+        )
+
+    if blocked_ai_bots and f.mention_rate < 50:
+        issues.append(
+            ActionPlanItem(
+                severity=Severity.WARNING,
+                title="Blocked AI Crawlers May Be Limiting Visibility",
+                detail=f"Low organic visibility coincides with robots.txt blocking: {', '.join(blocked_ai_bots)}.",
+                related_check="Technical ↔ Visibility",
+                recommendation="Allow AI crawlers in robots.txt (see the generated file) so your content can be learned and cited.",
+            )
+        )
 
     return issues
 
@@ -446,7 +746,11 @@ def calculate_audit_score(
 ) -> Dict[str, Any]:
     """
     Pure function computing Technical Score, AI Visibility Score, Composite Score,
-    and prioritized Action Plan.
+    and the prioritized Action Plan.
+
+    Composite = WEIGHT_TECHNICAL * technical + WEIGHT_AI_VISIBILITY * ai_visibility.
+    If AI visibility could not be measured, the composite equals the technical score and the
+    result says so explicitly (score_note); no AI data is ever invented.
     """
     brand_name = analyzed_content.get("brand_name", "")
     category = analyzed_content.get("category", "")
@@ -473,41 +777,38 @@ def calculate_audit_score(
         summary=f"Technical Readiness: {technical_score}/100",
     )
 
-    # 2. AI Visibility
-    ai_score = round(ai_visibility_raw.get("score", 0.0), 1)
-    query_findings = [
-        AiVisibilityQueryFinding(**q) for q in ai_visibility_raw.get("queries", [])
-    ]
-    ai_findings_model = AiVisibilityFindings(
-        score=ai_score,
-        queries=query_findings,
-        mention_rate=ai_visibility_raw.get("mention_rate", 0.0),
-        recommendation_rate=ai_visibility_raw.get("recommendation_rate", 0.0),
-        brand_citation_rate=ai_visibility_raw.get("brand_citation_rate", 0.0),
-        competitor_share_of_voice=ai_visibility_raw.get("competitor_share_of_voice", {}),
-        multilingual_breakdown=ai_visibility_raw.get("multilingual_breakdown", []),
-    )
-    ai_issues = evaluate_ai_findings_for_action_plan(ai_visibility_raw, brand_name, category)
+    # 2. AI visibility (measured from real probe answers, or explicitly unavailable)
+    ai_findings = build_ai_findings(ai_visibility_raw, brand_name)
+    blocked = analyzed_content.get("crawlability", {}).get("robots_parsed", {}).get("blocked_ai_bots", [])
+    ai_issues = evaluate_ai_findings_for_action_plan(ai_findings, brand_name, blocked)
 
-    # 3. Composite GEO Score (40% Technical, 60% AI Visibility)
-    composite_score = round(
-        (WEIGHT_TECHNICAL * technical_score) + (WEIGHT_AI_VISIBILITY * ai_score),
-        1,
-    )
+    # 3. Composite GEO Score
+    if ai_findings.available and ai_findings.score is not None:
+        weight_technical, weight_ai = WEIGHT_TECHNICAL, WEIGHT_AI_VISIBILITY
+        composite_score = round((weight_technical * technical_score) + (weight_ai * ai_findings.score), 1)
+        score_note: Optional[str] = None
+    else:
+        weight_technical, weight_ai = 1.0, 0.0
+        composite_score = technical_score
+        score_note = (
+            "AI visibility could not be measured, so this score reflects technical readiness only. "
+            f"Reason: {ai_findings.unavailable_reason}"
+        )
 
     # 4. Action Plan: prioritized (Critical first, then Warning, then Opportunity)
     all_issues = crawl_issues + schema_issues + meta_issues + semantic_issues + ai_issues
-
     severity_order = {Severity.CRITICAL: 0, Severity.WARNING: 1, Severity.OPPORTUNITY: 2}
     sorted_issues = sorted(all_issues, key=lambda x: severity_order.get(x.severity, 3))
 
     return {
         "composite_score": composite_score,
         "technical_score": technical_score,
-        "ai_visibility_score": ai_score,
-        "weight_technical": WEIGHT_TECHNICAL,
-        "weight_ai_visibility": WEIGHT_AI_VISIBILITY,
+        "ai_visibility_score": ai_findings.score,
+        "ai_visibility_available": ai_findings.available,
+        "score_note": score_note,
+        "weight_technical": weight_technical,
+        "weight_ai_visibility": weight_ai,
         "technical_findings": technical_findings,
-        "ai_visibility_findings": ai_findings_model,
+        "ai_visibility_findings": ai_findings,
         "issues": sorted_issues,
     }

@@ -1,15 +1,54 @@
+"""
+AI visibility measurement engine.
+
+Design principles (see README "Methodology"):
+
+1. **Separate probes, not one batch call.** Every probe is its own LLM call, so one
+   answer cannot contaminate another.
+2. **Repeated trials.** The English organic-discovery probe runs several times with
+   sampling enabled, so the report can say "mentioned in 2 of 3 runs" instead of a
+   single yes/no.
+3. **Unbranded discovery.** The organic probes ask a category question WITHOUT the
+   brand name ("What are the best X?") and check whether the brand surfaces on its
+   own. This is the real visibility test; a prompt that contains the brand name only
+   proves the model can repeat it.
+4. **Perception probe.** A branded probe asks the model what it believes the brand
+   is, without being fed the site's own description. A judge then compares that
+   description with facts taken from the site -> accurate / partial / hallucinated /
+   unknown.
+5. **Competitors come from the model's own answers** (structured JSON lists), not
+   from a hardcoded catalogue.
+6. **No fabricated data.** If a call fails, that probe is marked "unavailable" and is
+   excluded from scoring. Nothing is ever synthesised to fill the gap.
+"""
+
 import asyncio
 import json
 import logging
 import re
-from typing import Dict, Any, List, Set, Tuple
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Protocol, Tuple
+from urllib.parse import urlparse
+
 from google import genai
-from .config import get_gemini_api_key, get_gemini_model
+from google.genai import types
+
+from .ranking import rank_score
+from .config import (
+    get_call_timeout_seconds,
+    get_gemini_api_key,
+    get_gemini_base_url,
+    get_gemini_model,
+    get_indic_runs,
+    get_probe_concurrency,
+    get_probe_runs,
+    get_probe_temperature,
+)
 
 logger = logging.getLogger("geoauditor.ai_simulator")
 
-# Candidate model list in the exact priority order requested by user:
-# 3.8 -> 3.6 -> 3.5 -> 3-preview -> 3.1-lite
+# Candidate models, tried in order after the configured GEMINI_MODEL.
 CANDIDATE_MODELS = [
     "gemini-3.8-flash",
     "gemini-3.6-flash",
@@ -18,437 +57,744 @@ CANDIDATE_MODELS = [
     "gemini-3.1-flash-lite",
 ]
 
+PERCEPTION_SCORES = {"accurate": 100.0, "partial": 60.0, "unknown": 15.0, "hallucinated": 5.0}
+
+LANGUAGES = {
+    "en": "English",
+    "hi": "Hindi (हिन्दी)",
+    "kn": "Kannada (ಕನ್ನಡ)",
+}
+
+
+def language_short(language: str) -> str:
+    return LANGUAGES[language].split(" ")[0]
+
 
 class AiQueryError(Exception):
-    """Raised when Gemini API query or evaluation fails."""
-    pass
+    """Kept for backwards compatibility. The pipeline no longer fails on AI errors."""
 
 
-def extract_evidence_excerpt(text: str, brand: str) -> str:
-    """Extracts the exact sentence or paragraph where the brand is mentioned."""
+class LLMUnavailableError(Exception):
+    """Raised by an LLM client when a call cannot be completed."""
+
+
+@dataclass
+class LLMResult:
+    text: str
+    model: str
+
+
+class LLMClient(Protocol):
+    async def generate(
+        self, prompt: str, *, json_mode: bool = False, temperature: float = 0.0
+    ) -> LLMResult: ...
+
+
+# --------------------------------------------------------------------------------------
+# Gemini client (the only place that talks to the network)
+# --------------------------------------------------------------------------------------
+
+
+class GeminiClient:
+    """
+    Calls Gemini with a model fallback list, retry-with-backoff on rate limits, a per-call
+    timeout, and a circuit breaker: unknown models and fatal auth errors are remembered for the
+    rest of the audit, and a model that is still rate-limited after its retries is skipped for
+    a cooldown so a quota outage fails fast instead of stalling every probe.
+    """
+
+    RETRY_DELAYS: Tuple[float, ...] = (2.0, 6.0)
+    COOLDOWN_SECONDS: float = 60.0
+
+    def __init__(self, api_key: str, models: Optional[List[str]] = None, base_url: Optional[str] = None):
+        base_url = base_url if base_url is not None else get_gemini_base_url()
+        http_options = types.HttpOptions(base_url=base_url) if base_url else None
+        self._client = genai.Client(api_key=api_key, http_options=http_options)
+        configured = get_gemini_model()
+        self._models = models or ([configured] + [m for m in CANDIDATE_MODELS if m != configured])
+        self._dead: set = set()
+        self._cooldown: Dict[str, float] = {}
+        self._fatal: Optional[str] = None
+        self._last_error: str = "no Gemini model available"
+        self.models_used: List[str] = []
+
+    @staticmethod
+    def _status_code(exc: Exception) -> Optional[int]:
+        code = getattr(exc, "code", None)
+        if isinstance(code, int):
+            return code
+        match = re.search(r"\b(4\d\d|5\d\d)\b", str(exc)[:200])
+        return int(match.group(1)) if match else None
+
+    def _usable(self, model: str) -> bool:
+        if model in self._dead:
+            return False
+        return self._cooldown.get(model, 0.0) <= time.monotonic()
+
+    async def _call_once(self, model: str, prompt: str, json_mode: bool, temperature: float) -> str:
+        config = types.GenerateContentConfig(
+            temperature=temperature,
+            response_mime_type="application/json" if json_mode else None,
+        )
+
+        def _sync() -> str:
+            response = self._client.models.generate_content(
+                model=model, contents=prompt, config=config
+            )
+            return (response.text or "").strip()
+
+        return await asyncio.wait_for(asyncio.to_thread(_sync), timeout=get_call_timeout_seconds())
+
+    async def generate(
+        self, prompt: str, *, json_mode: bool = False, temperature: float = 0.0
+    ) -> LLMResult:
+        if self._fatal:
+            raise LLMUnavailableError(self._fatal)
+
+        last_error = self._last_error
+        first_model_of_call = True
+        for model in self._models:
+            if not self._usable(model):
+                continue
+            # Backoff retries are spent only on the first model tried in a call. Fallback models
+            # get a single attempt, so a quota outage cannot multiply into dozens of requests.
+            attempts = len(self.RETRY_DELAYS) + 1 if first_model_of_call else 1
+            first_model_of_call = False
+            for attempt in range(attempts):
+                try:
+                    text = await self._call_once(model, prompt, json_mode, temperature)
+                    if not text:
+                        last_error = f"{model}: empty response"
+                        break  # try next model
+                    if model not in self.models_used:
+                        self.models_used.append(model)
+                    return LLMResult(text=text, model=model)
+                except asyncio.TimeoutError:
+                    last_error = f"{model}: timed out"
+                    break
+                except Exception as exc:  # noqa: BLE001 - classified below
+                    code = self._status_code(exc)
+                    last_error = f"{model}: {str(exc)[:160]}"
+                    if code in (401, 403):
+                        self._fatal = f"Gemini authentication failed ({code}). Check GEMINI_API_KEY."
+                        raise LLMUnavailableError(self._fatal) from exc
+                    if code in (400, 404):
+                        # Unknown / unsupported model name, or a rejected request.
+                        self._dead.add(model)
+                        break
+                    if code == 429:
+                        if attempt < attempts - 1:
+                            await asyncio.sleep(self.RETRY_DELAYS[attempt])
+                            continue
+                        # Still rate-limited: skip this model for a while.
+                        self._cooldown[model] = time.monotonic() + self.COOLDOWN_SECONDS
+                        break
+                    break  # 5xx, network error -> next model
+
+        self._last_error = last_error
+        raise LLMUnavailableError(last_error)
+
+
+# --------------------------------------------------------------------------------------
+# Parsing and matching helpers (pure functions, unit-tested)
+# --------------------------------------------------------------------------------------
+
+
+def parse_json_loose(text: str) -> Optional[Any]:
+    """Parses JSON that may be wrapped in markdown fences or surrounded by prose."""
     if not text:
-        return "No response content received from AI."
+        return None
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    try:
+        return json.loads(cleaned)
+    except Exception:  # noqa: BLE001
+        pass
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(cleaned[start : end + 1])
+        except Exception:  # noqa: BLE001
+            return None
+    return None
 
-    sentences = re.split(r"(?<=[.!?\u0964])\s+", text)
-    matches = [s for s in sentences if brand.lower() in s.lower()]
-    if matches:
-        return " ".join(matches[:2]).strip()
 
-    return " ".join(sentences[:2]).strip()
+def normalize_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
 
 
-def extract_competitors(text: str, brand_name: str, domain: str) -> List[str]:
+def spaced_words(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+
+
+_SECOND_LEVEL = {"co", "com", "org", "net", "gov", "edu", "ac"}
+
+
+def registrable_root(host_or_url: str) -> str:
+    """'https://www.shop.razorpay.com/x' -> 'razorpay';  'foo.co.in' -> 'foo'."""
+    value = (host_or_url or "").strip().lower()
+    if not value:
+        return ""
+    if "://" not in value:
+        value = "//" + value
+    host = (urlparse(value).hostname or "").strip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    labels = [p for p in host.split(".") if p]
+    if not labels:
+        return ""
+    if len(labels) >= 3 and labels[-2] in _SECOND_LEVEL and len(labels[-1]) == 2:
+        return labels[-3]
+    if len(labels) >= 2:
+        return labels[-2]
+    return labels[0]
+
+
+_CORPORATE_SUFFIXES = {
+    "inc", "llc", "ltd", "pvt", "limited", "corp", "corporation", "co", "company",
+    "technologies", "technology", "software", "labs", "app", "io", "ai", "hq", "official", "the",
+}
+
+
+def core_name(value: str) -> str:
+    """Normalised brand name with generic corporate words removed ('Notion Labs, Inc.' -> 'notion')."""
+    words = [w for w in spaced_words(value).split() if w not in _CORPORATE_SUFFIXES]
+    return "".join(words)
+
+
+class BrandMatcher:
     """
-    Extracts potential competitor brand names mentioned in the AI response.
-    Inspired by Otterly.ai competitive benchmarking and Section 6 of literature review.
+    Decides whether an item in a model's list refers to the audited brand.
+
+    Matching is deliberately strict: after dropping generic corporate words, the whole name must
+    equal the brand (or the domain root). Substring matching would count "Renderforest" as
+    "Render" or "Notional" as "Notion" and inflate visibility.
     """
-    text_lower = text.lower()
-    brand_lower = brand_name.lower()
-    domain_root = domain.lower().replace("www.", "").split(".")[0]
 
-    known_competitors_catalog = [
-        "paypal", "stripe", "square", "adyen", "razorpay", "cashfree", "payu", "phonepe", "paytm",
-        "shopify", "woocommerce", "magento", "bigcommerce", "wix", "squarespace", "webflow",
-        "github", "gitlab", "bitbucket", "aws", "azure", "google cloud", "vercel", "netlify", "render",
-        "figma", "sketch", "adobe xd", "canva", "invision", "miro", "notion", "airtable", "jira",
-        "salesforce", "hubspot", "zoho", "freshworks", "zendesk", "intercom", "mailchimp",
-        "slack", "microsoft teams", "zoom", "discord", "loom", "asana", "monday.com", "clickup",
-        "openai", "anthropic", "cohere", "mistral", "perplexity", "google gemini", "meta llama",
-    ]
+    def __init__(self, brand_name: str, domain: str):
+        self.brand_norm = normalize_name(brand_name)
+        self.brand_core = core_name(brand_name)
+        self.brand_words = spaced_words(brand_name)
+        self.domain_root = registrable_root(domain)
+        self.domain_root_norm = normalize_name(self.domain_root)
 
-    found: Set[str] = set()
-    for comp in known_competitors_catalog:
-        if comp in text_lower and comp != brand_lower and comp != domain_root:
-            found.add(comp.title())
+    def website_matches(self, website: Optional[str]) -> bool:
+        if not website or str(website).strip().lower() in ("null", "none", "n/a", "unknown"):
+            return False
+        root = normalize_name(registrable_root(str(website)))
+        return bool(root) and root == self.domain_root_norm
 
-    bullet_items = re.findall(r"(?:^|\n)\s*(?:[-*]|\d+\.)\s*\[?([A-Za-z0-9\s]{2,25})\]?", text)
-    for item in bullet_items:
-        clean = item.strip()
-        clean_lower = clean.lower()
-        if (
-            len(clean) >= 3
-            and clean_lower != brand_lower
-            and clean_lower != domain_root
-            and clean_lower not in ("the", "here", "read", "learn", "visit", "link", "overview", "features")
-        ):
-            if any(c in clean_lower for c in ["app", "pay", "cloud", "hub", "ai", "io", "co", "desk", "soft"]):
-                found.add(clean.title())
+    def name_matches(self, name: str) -> bool:
+        candidate = core_name(name)
+        if not candidate:
+            return False
+        targets = {t for t in (self.brand_norm, self.brand_core, self.domain_root_norm) if t}
+        return candidate in targets
 
-    return sorted(list(found))[:5]
+    def matches(self, name: str, website: Optional[str]) -> bool:
+        return self.website_matches(website) or self.name_matches(name)
+
+    def text_mentions(self, text: str) -> bool:
+        """Fallback for non-JSON answers: whole-word match on the raw text."""
+        spaced = f" {spaced_words(text)} "
+        candidates = {self.brand_words, self.domain_root}
+        return any(len(c) >= 3 and f" {c} " in spaced for c in candidates if c)
 
 
-def evaluate_response_for_intent(
-    intent_name: str,
-    brand_name: str,
-    domain: str,
-    query: str,
-    response_text: str,
-    language: str = "en",
-    language_name: str = "English",
+def parse_recommendations(parsed: Any) -> List[Dict[str, Any]]:
+    """Extracts [{'name','website','reason'}] in the order the model ranked them."""
+    items: Any = []
+    if isinstance(parsed, dict):
+        items = parsed.get("recommendations") or parsed.get("results") or []
+    elif isinstance(parsed, list):
+        items = parsed
+    out: List[Dict[str, Any]] = []
+    for entry in items if isinstance(items, list) else []:
+        if isinstance(entry, str):
+            name, website, reason = entry.strip(), None, ""
+        elif isinstance(entry, dict):
+            name = str(entry.get("name") or entry.get("brand") or "").strip()
+            website = entry.get("website") or entry.get("domain") or entry.get("url")
+            reason = str(entry.get("reason") or "").strip()
+        else:
+            continue
+        if name:
+            out.append({"name": name, "website": str(website).strip() if website else None, "reason": reason})
+    return out[:8]
+
+
+def evaluate_organic_answer(
+    *,
+    probe_id: str,
+    run_index: int,
+    language: str,
+    question: str,
+    raw_text: str,
+    model_used: str,
+    matcher: BrandMatcher,
 ) -> Dict[str, Any]:
-    text_lower = response_text.lower()
-    brand_lower = brand_name.lower()
-    domain_root = domain.lower().replace("www.", "").split(".")[0]
+    """Turns one organic-discovery answer into a finding dict. Pure function."""
+    parsed = parse_json_loose(raw_text)
+    items = parse_recommendations(parsed)
 
-    mentioned = (brand_lower in text_lower) or (len(domain_root) > 3 and domain_root in text_lower)
-    cited_brand_domain = (domain.lower() in text_lower) or (f"{domain_root}.com" in text_lower)
+    rank: Optional[int] = None
+    matched: Optional[Dict[str, Any]] = None
+    for idx, item in enumerate(items, start=1):
+        if matcher.matches(item["name"], item["website"]):
+            rank, matched = idx, item
+            break
 
-    rec_keywords = [
-        "recommend", "recommended", "top choice", "top pick", "best option", "leading platform",
-        "go-to", "trusted", "highly rated", "must-have", "industry standard",
-        "अनुशंसित", "सिफारिश", "सर्वश्रेष्ठ", "शीर्ष विकल्प", "विश्वसनीय", "प्रमुख समाधान",
-        "ಶಿಫಾರಸು", "ಅತ್ಯುತ್ತಮ", "ವಿಶ್ವಾಸಾರ್ಹ", "ಪ್ರಮುಖ ವೇದಿಕೆ", "ಮೊದಲ ಆಯ್ಕೆ"
-    ]
-    recommended = mentioned and any(k in text_lower for k in rec_keywords)
+    parse_note = None
+    if not items:
+        # The model answered, but not in the requested structure: fall back to a text match.
+        mentioned = matcher.text_mentions(raw_text)
+        parse_note = "Answer was not structured JSON; brand detected by text match (no rank available)."
+    else:
+        mentioned = matched is not None
 
-    sentiment = "not_mentioned"
-    position = "omitted"
-    score = 0.0
+    cited_domain = bool(matched and matcher.website_matches(matched.get("website")))
+    competitors = [i["name"] for i in items if not matcher.matches(i["name"], i["website"])]
 
     if mentioned:
-        first_index = text_lower.find(brand_lower)
-        if first_index == -1:
-            first_index = text_lower.find(domain_root)
-
-        text_length = max(1, len(text_lower))
-        relative_pos = first_index / text_length
-
-        if relative_pos < 0.25:
-            position = "primary"
+        score = round(rank_score(rank) * 100, 1)
+        if matched:
+            evidence = f"#{rank} {matched['name']}" + (f": {matched['reason']}" if matched["reason"] else "")
         else:
-            position = "listed"
-
-        pos_words = [
-            "excellent", "leading", "popular", "top", "recommended", "robust", "great", "trusted",
-            "powerful", "innovative", "leader", "preferred", "reliable", "बढ़िया", "ಅತ್ಯುತ್ತಮ", "ಉತ್ತಮ"
-        ]
-        neg_words = [
-            "outdated", "poor", "limited", "lacks", "slow", "criticized", "expensive", "unreliable",
-            "complex", "खामियां", "ದೋಷಗಳು"
-        ]
-
-        pos_count = sum(1 for w in pos_words if w in text_lower)
-        neg_count = sum(1 for w in neg_words if w in text_lower)
-
-        if pos_count > neg_count:
-            sentiment = "positive"
-        elif neg_count > pos_count:
-            sentiment = "negative"
-        else:
-            sentiment = "neutral"
-
-        base_score = 75.0
-        if position == "primary":
-            base_score += 15.0
-        if recommended:
-            base_score += 10.0
-        if cited_brand_domain:
-            base_score += 10.0
-        if sentiment == "positive":
-            base_score += 5.0
-        elif sentiment == "negative":
-            base_score -= 15.0
-
-        score = min(100.0, max(40.0, base_score))
+            evidence = "Brand named in a free-text answer."
     else:
-        position = "omitted"
-        sentiment = "not_mentioned"
-        if intent_name == "Brand Discovery":
-            score = 10.0
-        else:
-            score = 15.0
-
-    evidence = extract_evidence_excerpt(response_text, brand_name)
-    competitors = extract_competitors(response_text, brand_name, domain)
+        score = 0.0
+        listed = ", ".join(i["name"] for i in items[:5]) or "(no brands listed)"
+        evidence = f"Brand was not in the model's list. It recommended: {listed}"
 
     return {
-        "intent_name": intent_name,
-        "query": query,
+        "probe_id": probe_id,
+        "probe_type": "organic_discovery",
+        "branded": False,
+        "run_index": run_index,
+        "intent_name": f"Organic Discovery ({language_short(language)})",
+        "query": question,
+        "status": "ok",
+        "error": parse_note,
+        "model_used": model_used,
         "mentioned": mentioned,
-        "sentiment": sentiment,
-        "position": position,
+        "rank": rank,
+        "sentiment": "not_assessed",
+        "position": "omitted" if not mentioned else ("primary" if rank and rank <= 3 else "listed"),
         "score": score,
         "evidence_excerpt": evidence,
-        "raw_response": response_text,
-        "recommended": recommended,
-        "cited_brand_domain": cited_brand_domain,
-        "cited_competitors": competitors,
+        "raw_response": raw_text,
+        "recommended": bool(rank and rank <= 3),
+        "cited_brand_domain": cited_domain,
+        "cited_competitors": competitors[:6],
         "language": language,
-        "language_name": language_name,
+        "language_name": LANGUAGES[language],
     }
 
 
-def generate_fallback_ai_response(brand_name: str, domain: str, category: str, intent: str, language: str) -> str:
-    """
-    Deterministic contextual baseline response when Gemini quota is exhausted.
-    Ensures zero downtime and immediate completion.
-    """
+def unavailable_finding(
+    *, probe_id: str, probe_type: str, branded: bool, run_index: int, intent_name: str,
+    question: str, language: str, error: str,
+) -> Dict[str, Any]:
+    return {
+        "probe_id": probe_id,
+        "probe_type": probe_type,
+        "branded": branded,
+        "run_index": run_index,
+        "intent_name": intent_name,
+        "query": question,
+        "status": "unavailable",
+        "error": error,
+        "model_used": "",
+        "mentioned": False,
+        "rank": None,
+        "sentiment": "not_assessed",
+        "position": "omitted",
+        "score": 0.0,
+        "evidence_excerpt": "AI check unavailable: no answer was received, so this probe is excluded from scoring.",
+        "raw_response": "",
+        "recommended": False,
+        "cited_brand_domain": False,
+        "cited_competitors": [],
+        "language": language,
+        "language_name": LANGUAGES[language],
+    }
+
+
+# --------------------------------------------------------------------------------------
+# Prompts
+# --------------------------------------------------------------------------------------
+
+_JSON_LIST_FORMAT = (
+    'Respond ONLY with JSON in exactly this shape: {"recommendations": [{"rank": 1, '
+    '"name": "<official brand or company name in Latin script>", '
+    '"website": "<official domain such as example.com, or null if unsure>", '
+    '"reason": "<one short sentence>"}]}. List up to 5 options, best first.'
+)
+
+
+def organic_question(language: str, category: str) -> str:
     if language == "hi":
-        return (
-            f"{category} के क्षेत्र में, प्रमुख समाधानों में {brand_name} ({domain}) और इसके समकक्ष उद्योग मानक शामिल हैं। "
-            f"{brand_name} अपने मजबूत बुनियादी ढांचे, विश्वसनीय एपीआई और आसान एकीकरण के लिए व्यापक रूप से अनुशंसित है। "
-            f"यह व्यवसायों के लिए एक लोकप्रिय और विश्वसनीय विकल्प बना हुआ है।"
-        )
-    elif language == "kn":
-        return (
-            f"{category} ಕ್ಷೇತ್ರದಲ್ಲಿ, {brand_name} ({domain}) ಪ್ರಮುಖ ಮತ್ತು ವ್ಯಾಪಕವಾಗಿ ಬಳಸಲ್ಪಡುವ ವೇದಿಕೆಯಾಗಿದೆ. "
-            f"ಇದು ಡೆವಲಪರ್‌ಗಳು ಮತ್ತು ಉದ್ಯಮಗಳಿಗೆ ಉತ್ತಮ ಕಾರ್ಯಕ್ಷಮತೆ ಮತ್ತು ಸುರಕ್ಷತೆಯನ್ನು ಒದಗಿಸುತ್ತದೆ. "
-            f"ಈ ವಿಭಾಗದಲ್ಲಿ {brand_name} ಅತ್ಯುತ್ತಮ ಮತ್ತು ಶಿಫಾರಸು ಮಾಡಲಾದ ಪರಿಹಾರಗಳಲ್ಲಿ ಒಂದಾಗಿದೆ."
-        )
+        return f"{category} के लिए सबसे अच्छे विकल्प कौन से हैं? आप कौन से विशिष्ट ब्रांड या कंपनियाँ सुझाएँगे?"
+    if language == "kn":
+        return f"{category} ಗಾಗಿ ಉತ್ತಮ ಆಯ್ಕೆಗಳು ಯಾವುವು? ನೀವು ಯಾವ ನಿರ್ದಿಷ್ಟ ಬ್ರ್ಯಾಂಡ್‌ಗಳು ಅಥವಾ ಕಂಪನಿಗಳನ್ನು ಶಿಫಾರಸು ಮಾಡುತ್ತೀರಿ?"
+    return f"What are the best {category}? Which specific brands or companies would you recommend?"
 
-    if intent == "Brand Discovery":
-        return (
-            f"{brand_name} ({domain}) is a recognized company offering innovative solutions in {category}. "
-            f"They provide robust tools, developer-first documentation, and scalable infrastructure designed for modern businesses. "
-            f"For more details, visit their official domain at https://{domain}."
+
+def organic_prompt(language: str, category: str) -> str:
+    question = organic_question(language, category)
+    lang_rule = {
+        "en": "",
+        "hi": " Write the 'reason' field in Hindi, but keep 'name' and 'website' in Latin script.",
+        "kn": " Write the 'reason' field in Kannada, but keep 'name' and 'website' in Latin script.",
+    }[language]
+    return (
+        f'A person asks an AI assistant: "{question}"\n'
+        f"Answer exactly as that assistant would, recommending real options you genuinely know of.{lang_rule}\n"
+        f"{_JSON_LIST_FORMAT}"
+    )
+
+
+def perception_question(brand_name: str, domain: str) -> str:
+    return f"What is {brand_name} ({domain})? What does it do, and who is it for?"
+
+
+def perception_prompt(brand_name: str, domain: str) -> str:
+    return (
+        f'A person asks an AI assistant: "{perception_question(brand_name, domain)}"\n'
+        "Answer honestly. If you do not actually recognise this brand, say so. Do NOT guess or invent details.\n"
+        'Respond ONLY with JSON: {"known": true or false, "description": "<2-3 sentence description, '
+        'empty if unknown>", "products_or_services": ["..."], "confidence": "high|medium|low"}'
+    )
+
+
+def judge_prompt(description: str, site_facts: Dict[str, Any]) -> str:
+    return (
+        "You are a strict fact-checker. Compare an AI model's description of a company with facts "
+        "published on the company's OWN website.\n\n"
+        f"WEBSITE FACTS:\n{json.dumps(site_facts, ensure_ascii=False, indent=2)}\n\n"
+        f"MODEL DESCRIPTION:\n{description}\n\n"
+        "Verdict rules:\n"
+        '- "accurate": the core identity (what the company is and does) matches the website.\n'
+        '- "partial": broadly right but vague, outdated, or missing key points.\n'
+        '- "hallucinated": describes something materially different, or states specifics that '
+        "contradict the website.\n"
+        "Judge only against the website facts. Missing detail is not an error; contradiction is.\n"
+        'Respond ONLY with JSON: {"verdict": "accurate|partial|hallucinated", '
+        '"wrong_claims": ["..."], "missing_facts": ["..."], "explanation": "<one sentence>"}'
+    )
+
+
+def category_prompt(site_facts: Dict[str, Any]) -> str:
+    return (
+        "Based ONLY on the website text below, name the market category this business competes in, "
+        "as a short generic phrase (3 to 7 words) that a buyer would type into a search engine, "
+        'for example "online payment gateways for small businesses". '
+        "Do NOT include the brand name.\n\n"
+        f"{json.dumps(site_facts, ensure_ascii=False, indent=2)}\n\n"
+        'Respond ONLY with JSON: {"category": "<phrase>"}'
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Perception judging
+# --------------------------------------------------------------------------------------
+
+_NO_KNOWLEDGE_PATTERNS = re.compile(
+    r"(do not have|don't have|have no|there is no|there's no|no)\s+(any\s+|specific\s+|reliable\s+|verified\s+|"
+    r"enough\s+|sufficient\s+|publicly available\s+|further\s+)*(information|record|records|data|details)|"
+    r"not familiar|unfamiliar|i am not aware|i'm not aware|not aware of|"
+    r"(unable|cannot|can't|couldn't|could not)\s+(to\s+)?(find|verify|identify|recognise|recognize)|"
+    r"(do not|don't)\s+(recognise|recognize|know)",
+    re.IGNORECASE,
+)
+
+_STOPWORDS = {
+    "the", "and", "for", "with", "that", "this", "from", "your", "are", "you", "our", "has", "have",
+    "was", "were", "their", "its", "into", "who", "what", "how", "all", "can", "will", "more",
+    "also", "such", "than", "other", "about", "which", "they", "them", "been", "being", "any",
+}
+
+
+def _content_tokens(text: str) -> set:
+    return {t for t in re.findall(r"[a-z0-9]{4,}", (text or "").lower()) if t not in _STOPWORDS}
+
+
+def site_facts_text(site_facts: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    for value in site_facts.values():
+        if isinstance(value, list):
+            parts.extend(str(v) for v in value)
+        elif value:
+            parts.append(str(value))
+    return " ".join(parts)
+
+
+def heuristic_perception(description: str, site_facts: Dict[str, Any]) -> Tuple[str, str]:
+    """
+    Conservative fallback used only when the judge LLM call fails. Token overlap cannot
+    prove a hallucination, so low overlap yields 'partial' (never 'hallucinated').
+    """
+    desc_tokens = _content_tokens(description)
+    fact_tokens = _content_tokens(site_facts_text(site_facts))
+    if not desc_tokens or not fact_tokens:
+        return "partial", "Not enough text to compare; heuristic comparison only."
+    overlap = len(desc_tokens & fact_tokens) / len(desc_tokens)
+    if overlap >= 0.25:
+        return "accurate", f"Keyword overlap with the website is {overlap:.0%} (heuristic comparison)."
+    return "partial", f"Keyword overlap with the website is only {overlap:.0%} (heuristic comparison)."
+
+
+async def run_perception_probe(
+    client: LLMClient, brand_name: str, domain: str, site_facts: Dict[str, Any]
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Returns (query_finding, perception_dict)."""
+    question = perception_question(brand_name, domain)
+    base_perception: Dict[str, Any] = {
+        "verdict": "unavailable",
+        "query": question,
+        "model_known_brand": False,
+        "model_description": "",
+        "site_facts": site_facts,
+        "wrong_claims": [],
+        "missing_facts": [],
+        "judged_by": "",
+        "score": 0.0,
+        "explanation": "",
+    }
+
+    try:
+        result = await client.generate(perception_prompt(brand_name, domain), json_mode=True, temperature=0.0)
+    except LLMUnavailableError as exc:
+        finding = unavailable_finding(
+            probe_id="perception#1", probe_type="brand_perception", branded=True, run_index=1,
+            intent_name="Brand Perception", question=question, language="en", error=str(exc),
         )
-    elif intent == "Category Search":
-        return (
-            f"In the {category} landscape, top recommended solutions include {brand_name} ({domain}), "
-            f"alongside market peers. {brand_name} is frequently praised for its seamless integration, "
-            f"developer experience, and high reliability."
-        )
-    elif intent == "Comparative Analysis":
-        return (
-            f"When evaluating {brand_name} against competitors in {category}, {brand_name} stands out for "
-            f"its intuitive interface, comprehensive API suite, and established brand reputation. "
-            f"While alternatives offer niche specialized features, {brand_name} remains an industry benchmark."
-        )
+        base_perception["explanation"] = "AI check unavailable; perception was not measured."
+        return finding, base_perception
+
+    parsed = parse_json_loose(result.text)
+    if isinstance(parsed, dict):
+        description = str(parsed.get("description") or "").strip()
+        claimed_known = parsed.get("known")
+        known = bool(claimed_known) if claimed_known is not None else bool(description)
     else:
-        return (
-            f"Leading alternatives and peers to {brand_name} in {category} include other prominent industry providers. "
-            f"Users choose {brand_name} ({domain}) for its reliability and comprehensive ecosystem."
-        )
+        # The model answered in prose instead of JSON. That is still its real answer: use it as
+        # the description rather than mistaking a formatting failure for "the model doesn't know".
+        description = result.text.strip()[:600]
+        known = True
+    if not description:
+        known = False
+    elif len(description) < 220 and _NO_KNOWLEDGE_PATTERNS.search(description):
+        known = False  # the model "described" the brand by saying it has no information
 
-
-from google.genai import types
-
-def get_fast_genai_client(api_key: str) -> genai.Client:
-    return genai.Client(api_key=api_key)
-
-
-async def execute_single_gemini_batch(
-    client: genai.Client,
-    brand_name: str,
-    domain: str,
-    category: str,
-    meta_description: str,
-) -> Tuple[Dict[str, str], str]:
-    """
-    Executes a SINGLE consolidated prompt to Gemini for all 6 queries.
-    Uses candidate models order: 3.8 -> 3.6 -> 3.5 -> 3-preview -> 3.1-lite.
-    Calls each model AT MOST ONCE. Never sleeps, avoiding free quota hangs.
-    """
-    configured_model = get_gemini_model()
-    model_order = [configured_model] + [m for m in CANDIDATE_MODELS if m != configured_model]
-
-    prompt = f"""You are a search engine evaluator measuring brand visibility and attribution in generative AI responses.
-Target Brand: {brand_name}
-Target Domain: {domain}
-Target Category: {category}
-Summary Context: {meta_description}
-
-Provide concise, realistic AI search answers for each of the 6 scenarios below.
-Respond in valid JSON with this exact schema:
-{{
-  "brand_discovery": "Answer to: Who is {brand_name} ({domain}) and what products or services do they offer?",
-  "category_search": "Answer to: What are the best and most recommended tools or platforms in {category}?",
-  "comparative": "Answer to: How does {brand_name} compare to top alternatives in {category}?",
-  "alternatives": "Answer to: What are the top alternatives to {brand_name} or leading solutions in {category}?",
-  "indic_hindi": "हिंदी में उत्तर: क्या {brand_name} ({domain}) {category} के लिए एक अनुशंसित विकल्प है?",
-  "indic_kannada": "ಕನ್ನಡದಲ್ಲಿ ವಿವರಣೆ: {category} ವಿಭಾಗದಲ್ಲಿ {brand_name} ({domain}) ಅತ್ಯುತ್ತಮ ಪರಿಹಾರವೇ?",
-  "competitors": ["TopCompetitor1", "TopCompetitor2", "TopCompetitor3"]
-}}
-Return ONLY raw JSON, with no markdown code fences."""
-
-    for model_name in model_order:
+    wrong: List[str] = []
+    missing: List[str] = []
+    judged_by = "n/a"
+    if not known:
+        verdict, explanation = "unknown", "The model said it does not recognise this brand."
+    elif not site_facts_text(site_facts).strip():
+        # Nothing to compare against: report that honestly instead of asking a judge to guess.
+        verdict = "partial"
+        explanation = "The model knows the brand, but the site had no extractable text to verify its description against."
+        judged_by = "none"
+    else:
         try:
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=model_name,
-                contents=prompt,
-            )
-            raw_text = (response.text or "").strip()
-            if raw_text.startswith("```json"):
-                raw_text = raw_text[len("```json"):].strip()
-            elif raw_text.startswith("```"):
-                raw_text = raw_text[len("```"):].strip()
-            if raw_text.endswith("```"):
-                raw_text = raw_text[:-3].strip()
+            judged = await client.generate(judge_prompt(description, site_facts), json_mode=True, temperature=0.0)
+            jp = parse_json_loose(judged.text) or {}
+            verdict = str(jp.get("verdict", "")).lower().strip()
+            if verdict not in ("accurate", "partial", "hallucinated"):
+                raise ValueError("unrecognised verdict")
+            wrong = [str(x) for x in (jp.get("wrong_claims") or [])][:5]
+            missing = [str(x) for x in (jp.get("missing_facts") or [])][:5]
+            explanation = str(jp.get("explanation") or "").strip()
+            judged_by = f"gemini ({judged.model})"
+        except Exception:  # noqa: BLE001 - a judge failure must never fabricate a verdict
+            verdict, explanation = heuristic_perception(description, site_facts)
+            judged_by = "heuristic"
 
-            parsed = json.loads(raw_text)
-            if isinstance(parsed, dict) and "brand_discovery" in parsed:
-                logger.info(f"Successfully evaluated 6 AI search queries in 1 shot using model '{model_name}'")
-                return parsed, model_name
-        except Exception as e:
-            err_str = str(e)
-            logger.info(f"Model {model_name} skipped ({err_str[:60]}), proceeding to next fallback...")
-            continue
+    perception = {
+        **base_perception,
+        "verdict": verdict,
+        "model_known_brand": known,
+        "model_description": description,
+        "wrong_claims": wrong,
+        "missing_facts": missing,
+        "judged_by": judged_by,
+        "score": PERCEPTION_SCORES[verdict],
+        "explanation": explanation,
+    }
 
-    logger.info("All Gemini candidate models busy/exhausted. Using instant deterministic baseline.")
-    return {}, "Fallback Baseline"
+    finding = {
+        "probe_id": "perception#1",
+        "probe_type": "brand_perception",
+        "branded": True,
+        "run_index": 1,
+        "intent_name": "Brand Perception",
+        "query": question,
+        "status": "ok",
+        "error": None,
+        "model_used": result.model,
+        "mentioned": known,
+        "rank": None,
+        "sentiment": "not_assessed",
+        "position": "omitted",
+        "score": PERCEPTION_SCORES[verdict],
+        "evidence_excerpt": description or "The model did not describe the brand.",
+        "raw_response": result.text,
+        "recommended": False,
+        "cited_brand_domain": False,
+        "cited_competitors": [],
+        "language": "en",
+        "language_name": LANGUAGES["en"],
+    }
+    return finding, perception
+
+
+# --------------------------------------------------------------------------------------
+# Category inference (brand-free; reads the site, not the model's memory of the brand)
+# --------------------------------------------------------------------------------------
+
+
+def sanitize_category(category: str, brand_name: str) -> str:
+    cleaned = re.sub(r"\s+", " ", (category or "")).strip().strip(".\"'")
+    if brand_name:
+        cleaned = re.sub(re.escape(brand_name), "", cleaned, flags=re.IGNORECASE).strip(" -,:")
+    return cleaned[:80]
+
+
+async def infer_category(client: LLMClient, site_facts: Dict[str, Any], brand_name: str) -> Optional[str]:
+    try:
+        result = await client.generate(category_prompt(site_facts), json_mode=True, temperature=0.0)
+    except LLMUnavailableError:
+        return None
+    parsed = parse_json_loose(result.text) or {}
+    category = sanitize_category(str(parsed.get("category") or ""), brand_name)
+    return category if len(category) >= 6 else None
+
+
+def build_site_facts(analyzed_content: Dict[str, Any]) -> Dict[str, Any]:
+    """Facts taken from the site itself: used for category inference and perception judging."""
+    metadata = analyzed_content.get("metadata", {}) or {}
+    headings = analyzed_content.get("headings", {}) or {}
+    nav = analyzed_content.get("navigation_links", []) or []
+    return {
+        "title": metadata.get("title", ""),
+        "meta_description": metadata.get("meta_description", ""),
+        "main_headings": (headings.get("h1_list") or [])[:3],
+        "section_headings": (headings.get("h2_sample") or [])[:5],
+        "navigation": [n.get("title", "") for n in nav[:8] if isinstance(n, dict)],
+    }
+
+
+# --------------------------------------------------------------------------------------
+# Orchestration of all probes
+# --------------------------------------------------------------------------------------
+
+
+def _unavailable_result(reason: str, category: str, category_source: str) -> Dict[str, Any]:
+    return {
+        "available": False,
+        "unavailable_reason": reason,
+        "queries": [],
+        "perception": None,
+        "category_used": category,
+        "category_source": category_source,
+        "engine_used": "",
+        "planned_probes": 0,
+    }
 
 
 async def run_ai_visibility_queries(
     brand_name: str,
     domain: str,
     category: str,
-    meta_description: str,
+    meta_description: str = "",
+    *,
+    site_facts: Optional[Dict[str, Any]] = None,
+    category_override: Optional[str] = None,
+    client: Optional[LLMClient] = None,
 ) -> Dict[str, Any]:
-    api_key = get_gemini_api_key()
+    """
+    Runs all probes and returns raw measurements (scored later by scoring.py).
 
-    query_definitions = [
-        {
-            "key": "brand_discovery",
-            "intent": "Brand Discovery",
-            "prompt": f"Who is {brand_name} ({domain}) and what products or services do they offer?",
-            "lang": "en",
-            "lang_name": "English",
-        },
-        {
-            "key": "category_search",
-            "intent": "Category Search",
-            "prompt": f"What are the best and most recommended tools or platforms in {category}?",
-            "lang": "en",
-            "lang_name": "English",
-        },
-        {
-            "key": "comparative",
-            "intent": "Comparative Analysis",
-            "prompt": f"How does {brand_name} compare to top alternatives in {category}?",
-            "lang": "en",
-            "lang_name": "English",
-        },
-        {
-            "key": "alternatives",
-            "intent": "Market Alternatives",
-            "prompt": f"What are the top alternatives to {brand_name} or leading solutions in {category}?",
-            "lang": "en",
-            "lang_name": "English",
-        },
-        {
-            "key": "indic_hindi",
-            "intent": "Indic Multilingual (Hindi)",
-            "prompt": f"{category} के क्षेत्र में क्या {brand_name} ({domain}) एक शीर्ष और अनुशंसित समाधान है? इसके प्रमुख प्रतियोगी कौन हैं?",
-            "lang": "hi",
-            "lang_name": "Hindi (हिन्दी)",
-        },
-        {
-            "key": "indic_kannada",
-            "intent": "Indic Multilingual (Kannada)",
-            "prompt": f"{category} ವಲಯದಲ್ಲಿ {brand_name} ({domain}) ಅತ್ಯುತ್ತಮ ಮತ್ತು ಶಿಫಾರಸು ಮಾಡಲಾದ ವೇದಿಕೆಯೇ? ಇದರ ಪ್ರಮುಖ ಪರ್ಯಾಯಗಳು ಯಾವುವು?",
-            "lang": "kn",
-            "lang_name": "Kannada (ಕನ್ನಡ)",
-        },
-    ]
+    `meta_description` is accepted for backwards compatibility but is deliberately NOT sent
+    to the model: the model must answer from its own knowledge, not from the site's copy.
+    """
+    site_facts = site_facts or {}
 
-    batch_results: Dict[str, str] = {}
-    engine_used = "Fallback Baseline"
+    if client is None:
+        api_key = get_gemini_api_key()
+        if not api_key or "your_gemini_api_key" in api_key:
+            return _unavailable_result(
+                "GEMINI_API_KEY is not configured, so AI visibility could not be measured.",
+                category_override or category,
+                "user" if category_override else "heuristic",
+            )
+        client = GeminiClient(api_key=api_key)
 
-    if api_key and "your_gemini_api_key" not in api_key:
-        client = get_fast_genai_client(api_key=api_key)
-        batch_results, engine_used = await execute_single_gemini_batch(
-            client=client,
-            brand_name=brand_name,
-            domain=domain,
-            category=category,
-            meta_description=meta_description,
-        )
-
-    results: List[Dict[str, Any]] = []
-    competitor_counter: Dict[str, int] = {}
-    brand_mentions_count = 0
-    brand_recs_count = 0
-    brand_domain_cites_count = 0
-
-    # Extra competitors parsed from batch response if present
-    batch_comps = batch_results.get("competitors", [])
-    if isinstance(batch_comps, list):
-        for c in batch_comps:
-            clean_c = str(c).strip().title()
-            if clean_c and clean_c.lower() != brand_name.lower():
-                competitor_counter[clean_c] = competitor_counter.get(clean_c, 0) + 1
-
-    for item in query_definitions:
-        key = item["key"]
-        intent = item["intent"]
-        prompt = item["prompt"]
-        lang = item["lang"]
-        lang_name = item["lang_name"]
-
-        resp_text = batch_results.get(key)
-        if not resp_text:
-            resp_text = generate_fallback_ai_response(brand_name, domain, category, intent, lang)
-
-        finding = evaluate_response_for_intent(
-            intent_name=intent,
-            brand_name=brand_name,
-            domain=domain,
-            query=prompt,
-            response_text=resp_text,
-            language=lang,
-            language_name=lang_name,
-        )
-        results.append(finding)
-
-        if finding["mentioned"]:
-            brand_mentions_count += 1
-        if finding["recommended"]:
-            brand_recs_count += 1
-        if finding["cited_brand_domain"]:
-            brand_domain_cites_count += 1
-
-        for comp in finding["cited_competitors"]:
-            competitor_counter[comp] = competitor_counter.get(comp, 0) + 1
-
-    total_queries = len(results)
-    mention_rate = round((brand_mentions_count / total_queries) * 100, 1)
-    recommendation_rate = round((brand_recs_count / total_queries) * 100, 1)
-    brand_citation_rate = round((brand_domain_cites_count / total_queries) * 100, 1)
-
-    total_entity_mentions = brand_mentions_count + sum(competitor_counter.values())
-    competitor_share_of_voice: Dict[str, float] = {}
-    if total_entity_mentions > 0:
-        competitor_share_of_voice[brand_name] = round((brand_mentions_count / total_entity_mentions) * 100, 1)
-        for comp, count in sorted(competitor_counter.items(), key=lambda x: x[1], reverse=True)[:4]:
-            competitor_share_of_voice[comp] = round((count / total_entity_mentions) * 100, 1)
+    # 1. Category used for the unbranded prompts
+    category_source = "heuristic"
+    category_used = category
+    if category_override and category_override.strip():
+        category_used, category_source = sanitize_category(category_override, brand_name), "user"
     else:
-        competitor_share_of_voice[brand_name] = 100.0
+        inferred = await infer_category(client, site_facts, brand_name) if site_facts else None
+        if inferred:
+            category_used, category_source = inferred, "gemini"
 
-    en_scores = [r["score"] for r in results if r["language"] == "en"]
-    multilingual_breakdown = [
-        {
-            "market": "Global English",
-            "language": "English (en)",
-            "average_score": round(sum(en_scores) / len(en_scores), 1) if en_scores else 0.0,
-            "queries_evaluated": len(en_scores),
-            "benchmark_reference": "Aggarwal et al. (GEO 2024)",
-        },
-        {
-            "market": "Indic Hindi",
-            "language": "Hindi (hi)",
-            "average_score": round(sum(r["score"] for r in results if r["language"] == "hi") / max(1, len([r for r in results if r["language"] == "hi"])), 1),
-            "queries_evaluated": len([r for r in results if r["language"] == "hi"]),
-            "benchmark_reference": "IndicGenBench / MILU",
-        },
-        {
-            "market": "Indic Kannada (Regional)",
-            "language": "Kannada (kn)",
-            "average_score": round(sum(r["score"] for r in results if r["language"] == "kn") / max(1, len([r for r in results if r["language"] == "kn"])), 1),
-            "queries_evaluated": len([r for r in results if r["language"] == "kn"]),
-            "benchmark_reference": "Indic QA Benchmark / NIE Mysuru",
-        },
-    ]
+    if not category_used.strip():
+        category_used, category_source = "products and services", "heuristic"
 
-    overall_score = round(sum(r["score"] for r in results) / len(results), 1)
+    # 2. Plan probes: N English runs, plus Hindi and Kannada
+    matcher = BrandMatcher(brand_name, domain)
+    runs_en, runs_indic = get_probe_runs(), get_indic_runs()
+    temperature = get_probe_temperature()
+    planned: List[Tuple[str, int, str]] = []
+    planned += [("en", i, f"organic_en#{i}") for i in range(1, runs_en + 1)]
+    planned += [("hi", i, f"organic_hi#{i}") for i in range(1, runs_indic + 1)]
+    planned += [("kn", i, f"organic_kn#{i}") for i in range(1, runs_indic + 1)]
+
+    semaphore = asyncio.Semaphore(get_probe_concurrency())
+
+    async def run_organic(language: str, run_index: int, probe_id: str) -> Dict[str, Any]:
+        question = organic_question(language, category_used)
+        async with semaphore:
+            try:
+                result = await client.generate(
+                    organic_prompt(language, category_used), json_mode=True, temperature=temperature
+                )
+            except LLMUnavailableError as exc:
+                return unavailable_finding(
+                    probe_id=probe_id, probe_type="organic_discovery", branded=False, run_index=run_index,
+                    intent_name=f"Organic Discovery ({language_short(language)})",
+                    question=question, language=language, error=str(exc),
+                )
+        return evaluate_organic_answer(
+            probe_id=probe_id, run_index=run_index, language=language, question=question,
+            raw_text=result.text, model_used=result.model, matcher=matcher,
+        )
+
+    async def run_perception() -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        async with semaphore:
+            return await run_perception_probe(client, brand_name, domain, site_facts)
+
+    organic_results, (perception_finding, perception) = await asyncio.gather(
+        asyncio.gather(*[run_organic(lang, idx, pid) for lang, idx, pid in planned]),
+        run_perception(),
+    )
+
+    queries = list(organic_results) + [perception_finding]
+    first_error = next((q["error"] for q in queries if q["status"] == "unavailable"), None)
+    models_used = getattr(client, "models_used", None)
 
     return {
-        "score": overall_score,
-        "queries": results,
-        "mention_rate": mention_rate,
-        "recommendation_rate": recommendation_rate,
-        "brand_citation_rate": brand_citation_rate,
-        "competitor_share_of_voice": competitor_share_of_voice,
-        "multilingual_breakdown": multilingual_breakdown,
-        "engine_used": engine_used,
+        "available": True,  # final availability is decided in scoring from the probe statuses
+        "unavailable_reason": first_error,
+        "queries": queries,
+        "perception": perception,
+        "category_used": category_used,
+        "category_source": category_source,
+        "engine_used": ", ".join(models_used) if models_used else "",
+        "planned_probes": len(queries),
     }

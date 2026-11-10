@@ -3,7 +3,7 @@ import { Cpu, Sparkles } from "lucide-react";
 
 interface SubScoreCardProps {
   technicalScore: number;
-  aiVisibilityScore: number;
+  aiVisibilityScore: number | null;
   weightTechnical: number;
   weightAiVisibility: number;
 }
@@ -79,36 +79,43 @@ export function SubScoreCard({
                 AI Visibility Signal
               </h3>
               <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                Does your brand show up when users ask real buying queries?
+                Does AI recommend your brand when users ask without naming it?
               </p>
             </div>
           </div>
           <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400">
-            {Math.round(weightAiVisibility * 100)}% Weight
+            {weightAiVisibility > 0 ? `${Math.round(weightAiVisibility * 100)}% Weight` : "Not scored"}
           </span>
         </div>
 
         <div className="mt-4 flex items-baseline justify-between">
           <div className="flex items-baseline gap-2">
             <span className="text-3xl font-bold font-mono text-zinc-900 dark:text-zinc-100">
-              {aiVisibilityScore}
+              {aiVisibilityScore === null ? "—" : aiVisibilityScore}
             </span>
-            <span className="text-xs text-zinc-400">/ 100</span>
+            <span className="text-xs text-zinc-400">{aiVisibilityScore === null ? "not measured" : "/ 100"}</span>
           </div>
-          <span
-            className={`text-xs px-2.5 py-0.5 rounded-full font-medium border ${getSubScoreBadge(
-              aiVisibilityScore
-            )}`}
-          >
-            {aiVisibilityScore >= 80 ? "Visible" : aiVisibilityScore >= 50 ? "Partial" : "Invisible"}
-          </span>
+          {aiVisibilityScore === null ? (
+            <span className="text-xs px-2.5 py-0.5 rounded-full font-medium border bg-zinc-50 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 border-zinc-200 dark:border-zinc-700">
+              Unavailable
+            </span>
+          ) : (
+            <span
+              className={`text-xs px-2.5 py-0.5 rounded-full font-medium border ${getSubScoreBadge(
+                aiVisibilityScore
+              )}`}
+            >
+              {aiVisibilityScore >= 80 ? "Visible" : aiVisibilityScore >= 50 ? "Partial" : "Invisible"}
+            </span>
+          )}
         </div>
 
         <div className="mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-800 text-[11px] text-zinc-500 dark:text-zinc-400 flex flex-wrap gap-x-3 gap-y-1">
-          <span>• Brand Discovery</span>
-          <span>• Category Search</span>
-          <span>• Comparative Analysis</span>
-          <span>• Market Alternatives</span>
+          <span>• Organic Discovery (35%)</span>
+          <span>• Hindi &amp; Kannada (15%)</span>
+          <span>• Rank (15%)</span>
+          <span>• Brand Perception (25%)</span>
+          <span>• Domain Citation (10%)</span>
         </div>
       </div>
     </div>

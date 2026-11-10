@@ -11,7 +11,7 @@
 
 As conversational large language models (LLMs) and generative search engines (e.g., Google Search Generative Experience, OpenAI Search, Perplexity AI) increasingly mediate web information retrieval, traditional Search Engine Optimization (SEO) fails to guarantee digital visibility. Generative Engine Optimization (GEO) requires auditing both machine-readable technical accessibility and probabilistic brand presence in natural language answers.
 
-**GEOAuditor** is a specialized empirical auditing framework and remediation engine. Designed according to research conducted at **The National Institute of Engineering (NIE), Mysuru**, this framework operationalizes GEO principles by combining automated technical signal validation, single-shot consolidated generative model simulation across multilingual buyer intents (English, Hindi, and Kannada), attribution metrics (Mention Rate, Recommendation Rate, Domain Citation Rate, and Competitor Share of Voice), and dynamic synthesis of RFC 9309 compliant `robots.txt` and Jeremy Howard (2024) `llmstxt.org` context files.
+**GEOAuditor** is a specialized empirical auditing framework and remediation engine. Designed according to research conducted at **The National Institute of Engineering (NIE), Mysuru**, this framework operationalizes GEO principles by combining automated technical signal validation, repeated, separate generative-model probes (unbranded category questions in English, Hindi and Kannada, plus a brand-perception fact-check), attribution metrics (organic Mention Rate, Top-3 Rate, Domain Citation Rate, and Competitor Share of Voice drawn from the models' own answers), and dynamic synthesis of RFC 9309 compliant `robots.txt` and Jeremy Howard (2024) `llmstxt.org` context files.
 
 ---
 
@@ -42,13 +42,13 @@ The architectural design of GEOAuditor directly integrates five core pillars fro
 
 ## Mathematical Formulation
 
-GEOAuditor computes an empirical, deterministic composite score $S_{\text{composite}} \in [0, 100]$:
+GEOAuditor computes an empirical, deterministic composite score $S_{\text{composite}} \in [0, 100]$. If the AI probes cannot run (no API key, quota exhausted), $S_{\text{vis}}$ is reported as *not measured* and the composite equals $S_{\text{tech}}$ with the report saying so; no AI data is ever estimated:
 
 $$S_{\text{composite}} = w_{\text{tech}} \cdot S_{\text{tech}} + w_{\text{vis}} \cdot S_{\text{vis}}$$
 
 Where:
-* $w_{\text{tech}} = 0.40$ (Technical Readiness Weight)
-* $w_{\text{vis}} = 0.60$ (AI Visibility Weight)
+* $w_{\text{tech}} = 0.25$ (Technical Readiness Weight)
+* $w_{\text{vis}} = 0.75$ (AI Visibility Weight)
 * $w_{\text{tech}} + w_{\text{vis}} = 1.00$
 
 ### 1. Technical Readiness Score ($S_{\text{tech}} \in [0, 100]$)
@@ -60,23 +60,32 @@ $$S_{\text{tech}} = S_{\text{meta}} + S_{\text{schema}} + S_{\text{crawl}} + S_{
 * **Crawler & Spec Accessibility ($S_{\text{crawl}} \in [0, 25]$)**: RFC 9309 compliance, absence of broad AI bot disallows, XML sitemap discovery.
 * **Semantic Architecture & Machine Context ($S_{\text{semantic}} \in [0, 25]$)**: Content-to-HTML density ratio, OpenGraph protocol compliance, and live `/llms.txt` verification.
 
-### 2. AI Engine Visibility Score ($S_{\text{vis}} \in [0, 100]$)
+### 2. AI Visibility Score ($S_{\text{vis}} \in [0, 100]$)
 
-Let $Q = \{q_1, q_2, \dots, q_N\}$ denote the set of evaluated query scenarios across linguistic and intent dimensions:
-* $q_1$: Brand Discovery (English)
-* $q_2$: Category Search & Recommendation (English)
-* $q_3$: Comparative Analysis (English)
-* $q_4$: Market Alternatives (English)
-* $q_5$: Indic Multilingual Query (Hindi, Devanagari)
-* $q_6$: Indic Multilingual Query (Kannada, Dravidian)
+Every probe is a **separate Gemini call**. The model is never given the site's own description to answer from.
 
-Each query response is parsed for brand entity mentions, recommendation sentiment, domain attribution, and competitive presence:
+| Probe | Brand named in prompt? | Runs | What it measures |
+|---|---|---|---|
+| Organic discovery (English) | No | 3 (configurable, sampled) | Does the brand surface when asked "What are the best {category}?" |
+| Organic discovery (Hindi, Kannada) | No | 1 each | Same question in each language |
+| Brand perception | Yes | 1 (+1 judge call) | What does the model believe the brand is, compared with facts from the site: accurate / partial / hallucinated / unknown |
+| Category inference | No | 1 | Derives the category phrase from the site text (or use the manual override) |
 
-$$S_{\text{vis}} = \frac{1}{|Q|} \sum_{i=1}^{|Q|} s(q_i)$$
+Each organic answer is a structured ranked list, so the brand's presence, rank, supplied domain, and the **competitors the model actually named** are read directly from it.
 
-Where:
-* $s(q_i) = 0$ if the brand is omitted.
-* $s(q_i) \in [40, 100]$ if mentioned, parameterized by placement position (primary vs. listed), affirmative recommendation, official domain URL citation, and sentiment polarity.
+$$S_{\text{vis}} = \min\left(\text{cap}(v),\; \frac{\sum_{k} w_k \, c_k}{\sum_{k \text{ measured}} w_k} \cdot 100\right)$$
+
+| Component $c_k$ | Weight $w_k$ | Definition |
+|---|---|---|
+| Organic discovery (EN) | 35 | mentions / successful English runs |
+| Organic discovery (HI, KN) | 15 | mean of per-language mention rates |
+| Rank prominence | 15 | mean rank score of runs where the brand appeared (rank 1 = 1.0, 2 = 0.85, 3 = 0.7, 4 = 0.55, 5 = 0.4) |
+| Perception accuracy | 25 | accurate 1.0, partial 0.6, unknown 0.15, hallucinated 0.05 |
+| Domain citation | 10 | share of English runs where the model supplied the brand's domain |
+
+* **Knowledge gating:** $\text{cap}(v)$ is 45 when the model does not know the brand and 40 when it describes it wrongly, because a brand the model cannot describe is not "visible" even if a name match occurred.
+* **No fabrication:** a probe whose call fails is marked *unavailable*, shown as such, and excluded; remaining weights are renormalised and the report states the coverage. If no English organic probe succeeds the AI score is not computed.
+* **Limits:** Gemini is a proxy for generative engines in general; other engines may behave differently. Sampling makes results vary run to run, which is why the English probe is repeated.
 
 ---
 
@@ -111,7 +120,7 @@ Where:
                                          v
                   +----------------------------------------------+
                   |            Deterministic Scoring             |
-                  |       40% Technical + 60% AI Visibility      |
+                  |       25% Technical + 75% AI Visibility      |
                   +----------------------+-----------------------+
                                          |
                                          v
@@ -140,7 +149,8 @@ GEOAuditor/
 |-- backend/
 |   |-- app/
 |   |   |-- __init__.py
-|   |   |-- ai_simulator.py          # Consolidated single-shot batch prompt evaluator
+|   |   |-- ai_simulator.py          # Multi-probe AI visibility engine (repeated unbranded probes, perception check)
+|   |   |-- ranking.py               # Rank-position scoring shared by probes and scoring
 |   |   |-- analyzer.py              # Technical signal & Schema.org JSON-LD extractor
 |   |   |-- config.py                # Scoring constants, AI bot list, environment config
 |   |   |-- database.py              # SQLite storage with parameterized queries
@@ -277,7 +287,7 @@ Access the user interface at `http://localhost:3000`.
 
 ## Verification & Automated Testing
 
-The backend includes a comprehensive suite of unit and integration tests covering the scoring engine, spec generators, and API endpoints:
+The backend includes a comprehensive suite of unit and integration tests covering the probe engine (matching, parsing, repeated runs, perception judging, failure handling with no fabricated data), the scoring formula, spec generators, the full pipeline, and API endpoints. All tests use a scripted fake LLM, so they run offline:
 
 ```bash
 cd backend
@@ -286,10 +296,12 @@ pytest tests/
 
 Expected output:
 ```text
-tests/test_api_endpoints.py ....                                         [ 40%]
-tests/test_audit_engine.py ......                                        [100%]
+tests/test_ai_probes.py ............................                 [ 67%]
+tests/test_api_endpoints.py ....                                         [ 76%]
+tests/test_audit_engine.py ......                                        [ 90%]
+tests/test_pipeline.py ....                                              [100%]
 
-======================== 10 passed in 0.40s =========================
+======================== 42 passed in 1.0s ==========================
 ```
 
 To verify frontend TypeScript compilation and production bundle generation:

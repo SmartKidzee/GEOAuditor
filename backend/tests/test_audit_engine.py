@@ -1,14 +1,35 @@
+import json
 import pytest
 from app.scoring import calculate_audit_score, WEIGHT_TECHNICAL, WEIGHT_AI_VISIBILITY
+from app.ai_simulator import BrandMatcher, evaluate_organic_answer
 from app.analyzer import parse_robots_txt, extract_brand_name
 from app.generator import generate_robots_txt_solution, generate_llms_txt_solution
 from bs4 import BeautifulSoup
 
 
-def test_weights_are_explicit_40_60():
-    assert WEIGHT_TECHNICAL == 0.40
-    assert WEIGHT_AI_VISIBILITY == 0.60
+def test_weights_are_explicit_25_75():
+    assert WEIGHT_TECHNICAL == 0.25
+    assert WEIGHT_AI_VISIBILITY == 0.75
     assert (WEIGHT_TECHNICAL + WEIGHT_AI_VISIBILITY) == 1.0
+
+
+def organic_finding(brand, domain, items, language="en", run=1):
+    """A real probe finding built from a model answer; items are (name, website) best first."""
+    raw = json.dumps(
+        {"recommendations": [{"rank": i, "name": n, "website": w, "reason": "r"} for i, (n, w) in enumerate(items, 1)]}
+    )
+    return evaluate_organic_answer(
+        probe_id=f"organic_{language}#{run}", run_index=run, language=language, question="q",
+        raw_text=raw, model_used="test", matcher=BrandMatcher(brand, domain),
+    )
+
+
+def perception(verdict, score):
+    return {
+        "verdict": verdict, "query": "q", "model_known_brand": verdict != "unknown",
+        "model_description": "d", "site_facts": {}, "wrong_claims": [], "missing_facts": [],
+        "judged_by": "test", "score": score, "explanation": "",
+    }
 
 
 def test_robots_txt_parsing_blocks_and_allows():
@@ -144,50 +165,21 @@ def test_scoring_engine_pure_function():
         },
     }
 
+    brand, domain = "TestCorp", "testcorp.dev"
+    others = [("GitHub", "github.com"), ("GitLab", "gitlab.com")]
     ai_raw_mock = {
-        "score": 75.0,
+        "available": True,
         "queries": [
-            {
-                "intent_name": "Brand Discovery",
-                "query": "Who is TestCorp?",
-                "mentioned": True,
-                "sentiment": "positive",
-                "position": "primary",
-                "score": 95.0,
-                "evidence_excerpt": "TestCorp is an established developer tooling company.",
-                "raw_response": "TestCorp is an established developer tooling company providing modern APIs.",
-            },
-            {
-                "intent_name": "Category Search",
-                "query": "Best developer tools?",
-                "mentioned": True,
-                "sentiment": "neutral",
-                "position": "listed",
-                "score": 75.0,
-                "evidence_excerpt": "Top tools include GitHub, GitLab, and TestCorp for APIs.",
-                "raw_response": "Top tools include GitHub, GitLab, and TestCorp for APIs.",
-            },
-            {
-                "intent_name": "Comparative Analysis",
-                "query": "TestCorp vs alternatives?",
-                "mentioned": True,
-                "sentiment": "positive",
-                "position": "listed",
-                "score": 75.0,
-                "evidence_excerpt": "TestCorp offers faster setup than legacy suites.",
-                "raw_response": "TestCorp offers faster setup than legacy suites.",
-            },
-            {
-                "intent_name": "Market Alternatives",
-                "query": "Alternatives to TestCorp?",
-                "mentioned": False,
-                "sentiment": "not_mentioned",
-                "position": "omitted",
-                "score": 55.0,
-                "evidence_excerpt": "Leading solutions include alternative A and B.",
-                "raw_response": "Leading solutions include alternative A and B.",
-            },
+            organic_finding(brand, domain, [others[0], (brand, domain), others[1]], "en", 1),
+            organic_finding(brand, domain, [(brand, domain), others[0]], "en", 2),
+            organic_finding(brand, domain, others, "en", 3),
+            organic_finding(brand, domain, [others[0], others[1], (brand, domain)], "hi", 1),
+            organic_finding(brand, domain, others, "kn", 1),
         ],
+        "perception": perception("accurate", 100.0),
+        "planned_probes": 5,
+        "category_used": "developer tooling",
+        "category_source": "gemini",
     }
 
     res = calculate_audit_score(analyzed_mock, ai_raw_mock)
@@ -199,19 +191,29 @@ def test_scoring_engine_pure_function():
     # Semantic: 7 (main) + 7 (landmarks) + 6 (sections) = 20
     # Expected Tech Score = 25 + 20 + 25 + 20 = 90.0
     assert res["technical_score"] == 90.0
-    assert res["ai_visibility_score"] == 75.0
 
-    # Composite = 0.40 * 90.0 + 0.60 * 75.0 = 36.0 + 45.0 = 81.0
-    assert res["composite_score"] == 81.0
+    # AI visibility (hand-computed from the component formula):
+    #   en 2/3 mentioned -> 0.6667 * 35 = 23.33
+    #   indic: hi 1/1, kn 0/1 -> mean 0.5 * 15 = 7.5
+    #   rank: mentioned runs ranks 2, 1, 3 -> (0.85 + 1.0 + 0.7)/3 = 0.85 * 15 = 12.75
+    #   perception accurate -> 1.0 * 25 = 25
+    #   citation 2/3 -> 0.6667 * 10 = 6.67
+    expected_ai = 23.33 + 7.5 + 12.75 + 25 + 6.67
+    assert res["ai_visibility_available"] is True
+    assert res["ai_visibility_score"] == pytest.approx(expected_ai, abs=0.1)
 
-    # Check that Action Plan issues are prioritized (Critical, then Warning, then Opportunity)
+    # Composite = 0.25 * 90.0 + 0.75 * AI
+    assert res["composite_score"] == pytest.approx(0.25 * 90.0 + 0.75 * res["ai_visibility_score"], abs=0.1)
+    assert res["weight_technical"] == 0.25 and res["weight_ai_visibility"] == 0.75
+    assert res["score_note"] is None
+
+    # Action Plan prioritisation: nothing critical here (tech fine, brand recognised)
     severities = [i.severity.value for i in res["issues"]]
-    # Should not have any Critical since tech and brand discovery passed
     assert "critical" not in severities
     assert "warning" in severities
-    # Missing llms.txt must be in action plan
     titles = [i.title for i in res["issues"]]
-    assert any("llms.txt" in t for t in titles)
+    assert any("llms.txt" in t for t in titles)  # missing llms.txt flagged
+    assert any("Inconsistent" in t for t in titles)  # 2 of 3 runs -> unstable visibility
 
 
 def test_scoring_critical_severity_when_blocked_and_missing_schema():
@@ -233,20 +235,15 @@ def test_scoring_critical_severity_when_blocked_and_missing_schema():
         "semantic_html": {"elements": {}, "word_count": 50},
     }
 
+    brand, domain = "GhostCo", "ghostco.com"
+    rivals = [("HubSpot", "hubspot.com"), ("Mailchimp", "mailchimp.com")]
     ai_critical = {
-        "score": 10.0,
-        "queries": [
-            {
-                "intent_name": "Brand Discovery",
-                "query": "Who is GhostCo?",
-                "mentioned": False,
-                "sentiment": "not_mentioned",
-                "position": "omitted",
-                "score": 10.0,
-                "evidence_excerpt": "No information found.",
-                "raw_response": "I do not have any verified records or information about GhostCo.",
-            }
-        ],
+        "available": True,
+        "queries": [organic_finding(brand, domain, rivals, "en", i) for i in (1, 2, 3)],
+        "perception": perception("unknown", 15.0),
+        "planned_probes": 4,
+        "category_used": "marketing automation",
+        "category_source": "heuristic",
     }
 
     res = calculate_audit_score(analyzed_critical, ai_critical)
@@ -261,4 +258,8 @@ def test_scoring_critical_severity_when_blocked_and_missing_schema():
     assert any("Blocked" in t for t in critical_titles)
     assert any("Schema" in t for t in critical_titles)
     assert any("Title" in t for t in critical_titles)
+    # Brand never surfaced unprompted and the model does not know it: both are critical
+    assert any("Not Recommended Unprompted" in t for t in critical_titles)
+    assert any("Do Not Recognise" in t for t in critical_titles)
+    assert res["ai_visibility_score"] <= 10.0
 

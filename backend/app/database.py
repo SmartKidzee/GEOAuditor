@@ -94,7 +94,7 @@ def save_audit_result(
     technical_findings: Dict[str, Any],
     ai_visibility_findings: Dict[str, Any],
     technical_score: float,
-    ai_visibility_score: float,
+    ai_visibility_score: Optional[float],
     composite_score: float,
     issues: List[Dict[str, Any]],
     solutions: List[Dict[str, Any]],

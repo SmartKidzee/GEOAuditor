@@ -76,25 +76,25 @@ const STEPS: StepConfig[] = [
   {
     key: "querying_ai",
     label: "AI Engine Visibility & Multilingual Queries",
-    sublabel: "Querying Google Gemini with buyer intent queries and Indic multilingual panel (Hindi & Kannada)",
+    sublabel: "Asking Gemini unbranded category questions (repeated runs, English + Hindi + Kannada) and what it believes your brand is",
     badge: "Step 4 of 5",
     icon: <Sparkles className="w-4 h-4" />,
     subtasks: [
-      "Connecting to Gemini API (Single Batch Mode · Free Quota Safe)",
-      "Evaluating Brand Discovery & Category Search buyer intent prompts",
-      "Benchmarking IndicGenBench Hindi & Indic QA Kannada multilingual matrix",
-      "Calculating Competitor Share of Voice & Domain Attribution rates",
+      "Inferring your market category from the site, without naming your brand",
+      "Running repeated organic-discovery prompts: does the AI recommend you unprompted?",
+      "Repeating the same question in Hindi and Kannada",
+      "Probing brand perception and fact-checking it against your site",
     ],
   },
   {
     key: "scoring",
     label: "GEO Scoring & Solution Synthesis",
-    sublabel: "Applying 40/60 weighting, synthesizing Howard 2024 /llms.txt, and compiling White-Label Action Plan",
+    sublabel: "Scoring from the measured answers, synthesizing Howard 2024 /llms.txt, and compiling the Action Plan",
     badge: "Step 5 of 5",
     icon: <Calculator className="w-4 h-4" />,
     subtasks: [
-      "Applying 40% Technical + 60% AI Visibility composite score formula",
-      "Synthesizing spec-compliant /llms.txt using Gemini Flash fallback engine",
+      "Applying 25% Technical + 75% AI Visibility composite score formula",
+      "Synthesizing spec-compliant /llms.txt with Gemini (deterministic builder as backup)",
       "Generating companion /llms-full.txt deep RAG context document",
       "Compiling Otterly-style white-label agency executive action plan",
     ],
@@ -247,14 +247,14 @@ export default function AuditProgressPage() {
     }
 
     if (status === "querying_ai" || elapsed > 4.5) {
-      addLog("GEMINI", "Initiating single-shot batch prompt across Gemini candidate fallback models...", "text-amber-400");
-      addLog("AI_SIM", "Evaluating buyer intent queries: Brand Discovery, Category Recommendations, Top Alternatives...", "text-purple-400");
-      addLog("INDIC", "Benchmarking IndicGenBench Hindi and Indic QA Kannada regional queries...", "text-emerald-400");
-      addLog("ATTRIB", "Computing Otterly-style Mention Rate, Recommendation Rate, and Competitor Share of Voice...", "text-cyan-400");
+      addLog("GEMINI", "Running separate probes (one Gemini call each, repeated for consistency)...", "text-amber-400");
+      addLog("AI_SIM", "Organic discovery: asking category questions without naming your brand...", "text-purple-400");
+      addLog("INDIC", "Repeating organic discovery in Hindi and Kannada...", "text-emerald-400");
+      addLog("ATTRIB", "Brand perception probe, then mention rate, rank, and competitor share of voice from the AI's own lists...", "text-cyan-400");
     }
 
     if (status === "scoring" || elapsed > 7.0) {
-      addLog("SCORING", "Computing composite GEO score: (0.40 * Technical) + (0.60 * AI Visibility)...", "text-blue-400");
+      addLog("SCORING", "Computing composite GEO score: (0.25 * Technical) + (0.75 * AI Visibility)...", "text-blue-400");
       addLog("SYNTH", "Synthesizing authentic /llms.txt file conforming strictly to Howard (2024) spec...", "text-emerald-400");
       addLog("FULL", "Generating companion /llms-full.txt machine context file for deep RAG indexing...", "text-teal-400");
       addLog("REPORT", "Assembling White-Label Agency executive scorecard and prioritized action plan...", "text-indigo-400");
@@ -347,17 +347,17 @@ export default function AuditProgressPage() {
                   <div className="flex items-center gap-1.5">
                     <Sparkles className="w-3 h-3 text-purple-500" />
                     <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200 truncate">
-                      Gemini Flash Fallback
+                      Gemini · multi-probe
                     </span>
                   </div>
                 </div>
 
                 <div className="bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-800 rounded-xl p-3">
-                  <span className="text-[10px] uppercase font-semibold text-zinc-400 block mb-0.5">Free Quota Shield</span>
+                  <span className="text-[10px] uppercase font-semibold text-zinc-400 block mb-0.5">Quota Handling</span>
                   <div className="flex items-center gap-1.5">
                     <ShieldCheck className="w-3 h-3 text-blue-500" />
                     <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200">
-                      1-Shot Batching
+                      Probe-level retries
                     </span>
                   </div>
                 </div>

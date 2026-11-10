@@ -39,10 +39,18 @@ export interface TechnicalFindings {
 }
 
 export interface AiVisibilityQueryFinding {
+  probe_id?: string;
+  probe_type?: "organic_discovery" | "brand_perception";
+  branded?: boolean;
+  run_index?: number;
   intent_name: string;
   query: string;
+  status?: "ok" | "unavailable";
+  error?: string | null;
+  model_used?: string;
   mentioned: boolean;
-  sentiment: "positive" | "neutral" | "negative" | "not_mentioned";
+  rank?: number | null;
+  sentiment: "positive" | "neutral" | "negative" | "not_mentioned" | "not_assessed";
   position: "primary" | "listed" | "omitted";
   score: number;
   evidence_excerpt: string;
@@ -59,17 +67,53 @@ export interface MultilingualMarketItem {
   language: string;
   average_score: number;
   queries_evaluated: number;
+  mentions?: number;
+  mention_rate?: number;
+  status?: "measured" | "unavailable";
   benchmark_reference: string;
 }
 
-export interface AiVisibilityFindings {
+export type PerceptionVerdict = "accurate" | "partial" | "hallucinated" | "unknown" | "unavailable";
+
+export interface PerceptionFinding {
+  verdict: PerceptionVerdict;
+  query: string;
+  model_known_brand: boolean;
+  model_description: string;
+  site_facts: Record<string, unknown>;
+  wrong_claims: string[];
+  missing_facts: string[];
+  judged_by: string;
   score: number;
+  explanation: string;
+}
+
+export interface ScoreComponent {
+  value: number | null;
+  weight: number;
+  points: number;
+}
+
+export interface AiVisibilityFindings {
+  score: number | null;
+  available?: boolean;
+  unavailable_reason?: string | null;
+  coverage?: number;
   queries: AiVisibilityQueryFinding[];
   mention_rate?: number;
   recommendation_rate?: number;
   brand_citation_rate?: number;
+  organic_runs?: number;
+  organic_mentions?: number;
   competitor_share_of_voice?: Record<string, number>;
   multilingual_breakdown?: MultilingualMarketItem[];
+  perception?: PerceptionFinding | null;
+  score_components?: Record<string, ScoreComponent>;
+  category_used?: string;
+  category_source?: "user" | "gemini" | "heuristic" | "";
+  engine_used?: string;
+  notes?: string[];
+  methodology?: string;
 }
 
 export interface GeneratedSolution {
@@ -101,7 +145,9 @@ export interface ReportData {
   brand_name: string;
   composite_score: number;
   technical_score: number;
-  ai_visibility_score: number;
+  ai_visibility_score: number | null;
+  ai_visibility_available?: boolean;
+  score_note?: string | null;
   weight_technical: number;
   weight_ai_visibility: number;
   technical_findings: TechnicalFindings;

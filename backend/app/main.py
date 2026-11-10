@@ -90,8 +90,11 @@ async def start_audit(request: AuditCreateRequest, background_tasks: BackgroundT
     job_id = str(uuid.uuid4())
     create_job(job_id=job_id, url=normalized)
 
+    brand_override = (request.brand_name or "").strip()[:80] or None
+    category_override = (request.category or "").strip()[:80] or None
+
     # Dispatch pipeline to background task
-    background_tasks.add_task(run_audit_pipeline, job_id, normalized)
+    background_tasks.add_task(run_audit_pipeline, job_id, normalized, brand_override, category_override)
 
     return AuditCreateResponse(job_id=job_id, status=JobStatus.PENDING.value)
 
