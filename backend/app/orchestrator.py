@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 from .models import JobStatus, ReportData
 from .database import update_job_status, save_audit_result
-from .scraper import crawl_site, ScrapeError
+from .scraper import crawl_site, build_crawl_from_pasted_html, ScrapeError
 from .analyzer import analyze_html_content
 from .ai_simulator import run_ai_visibility_queries, build_site_facts
 from .scoring import calculate_audit_score
@@ -17,6 +17,7 @@ async def run_audit_pipeline(
     target_url: str,
     brand_name_override: Optional[str] = None,
     category_override: Optional[str] = None,
+    pasted_html: Optional[str] = None,
 ):
     """
     Executes the full audit pipeline:
@@ -29,7 +30,10 @@ async def run_audit_pipeline(
         # Step 1: Crawling
         logger.info(f"[{job_id}] Stage 1: Crawling {target_url}")
         update_job_status(job_id, JobStatus.CRAWLING)
-        crawl_data = await crawl_site(target_url)
+        if pasted_html and pasted_html.strip():
+            crawl_data = await build_crawl_from_pasted_html(target_url, pasted_html)
+        else:
+            crawl_data = await crawl_site(target_url)
 
         # Step 2: Content & Technical Signal Extraction
         logger.info(f"[{job_id}] Stage 2: Extracting technical content")
@@ -50,6 +54,7 @@ async def run_audit_pipeline(
                 meta_description=analyzed_content["metadata"]["meta_description"],
                 site_facts=build_site_facts(analyzed_content),
                 category_override=category_override,
+                blocked_by_waf=bool(analyzed_content.get("blocked_by_waf", False)),
             )
         except Exception as ai_exc:  # noqa: BLE001 - never invent data, never fail the audit
             logger.exception(f"[{job_id}] AI probes crashed: {ai_exc}")

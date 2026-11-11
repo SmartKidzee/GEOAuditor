@@ -51,6 +51,8 @@ class TechnicalFindings(BaseModel):
     extracted_brand: str = ""
     extracted_category: str = ""
     summary: str = ""
+    crawl_blocked: bool = False
+    crawl_block_reason: Optional[str] = None
 
 
 class AiVisibilityQueryFinding(BaseModel):
@@ -155,6 +157,38 @@ class AuditCreateRequest(BaseModel):
     # discovery prompts ask, so the user can correct it.
     brand_name: Optional[str] = None
     category: Optional[str] = None
+    # Optional HTML source supplied directly by the user when a site enforces human verification.
+    pasted_html: Optional[str] = None
+
+
+class BrandResolveRequest(BaseModel):
+    query: str
+
+
+class BrandCandidate(BaseModel):
+    brand_name: str
+    domain: str
+    url: str
+    description: str = ""
+
+
+class BrandResolveResponse(BaseModel):
+    query: str
+    is_direct_url: bool = False
+    candidates: List[BrandCandidate] = Field(default_factory=list)
+
+
+class PreflightRequest(BaseModel):
+    url: str
+
+
+class PreflightResponse(BaseModel):
+    url: str
+    domain: str
+    reachable: bool = True
+    blocked_by_waf: bool = False
+    status_code: int = 200
+    block_reason: Optional[str] = None
 
 
 class AuditCreateResponse(BaseModel):

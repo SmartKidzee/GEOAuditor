@@ -19,11 +19,11 @@ Search behavior is shifting from "10 blue links" to direct AI-generated answers 
 - Tie technical fixes directly to AI-visibility outcomes, instead of reporting them as two disconnected dashboards.
 - Don't just flag a missing/broken `robots.txt` or `llms.txt` — generate a correct one the user can download and drop straight into their site root.
 - Make every score component transparent and reproducible — no black-box weighting.
-- Ship an MVP that is fully functional end-to-end: submit URL → get real report. No mocked data anywhere in the shipped product.
+- Ship a production release that is fully functional end-to-end: submit URL → get real report. No mocked data anywhere in the shipped product.
 
 ## 4. Non-Goals (explicitly out of scope for this build)
 
-- Scheduled/recurring monitoring (competitors like Profound, Peec AI, Otterly.ai do this — GEOAuditor is diagnostic, not a subscription tracker).
+- Scheduled/recurring subscription monitoring (GEOAuditor is diagnostic, not a subscription tracker).
 - Multi-brand side-by-side competitor benchmarking.
 - Historical score tracking over time.
 - Auto-generated code fixes/patches for the site's actual codebase (schema markup snippets, HTML restructuring, etc.) — out of scope for now. This is distinct from generating standalone `robots.txt` / `llms.txt` files, which **is** in scope (see §6 and §7a).
@@ -49,7 +49,7 @@ Search behavior is shifting from "10 blue links" to direct AI-generated answers 
 ## 7. Scoring Model
 
 ```
-Composite GEO Score = 0.25 × Technical Score + 0.75 × AI Visibility Score
+Composite GEO Score = 0.35 × Technical Score + 0.65 × AI Visibility Score
 ```
 
 AI Visibility is the headline measurement; technical readiness is the diagnostic that explains why visibility is high or low. If the AI probes cannot run, the report says so and shows the technical score alone — no AI data is estimated.
@@ -98,17 +98,17 @@ This is the feature that turns the audit from a report into a fix.
 | AI evaluation | Google Gemini API | Real-world AI visibility signal |
 | Database | SQLite | Lightweight, sufficient for job state + audit history at this scale |
 
-## 9. Competitive Landscape
+## 9. Differentiation
 
-Existing players (Profound, Peec AI, Otterly.ai, Scrunch AI, Semrush AI Toolkit, Ahrefs Brand Radar, AthenaHQ) run scheduled buyer-question checks against ChatGPT/Perplexity/Gemini/Copilot/Google AI Overviews and report brand-mention frequency and competitor placement. They're subscription SaaS — Profound sits around enterprise pricing (~$499/mo), Peec AI starts near €89/mo, Otterly from $29/mo. A recurring criticism is that they measure well but under-deliver on **what to actually do about the gaps**.
+Most existing AI visibility tools are subscription SaaS trackers that measure mention frequency but under-deliver on **what to actually do about the gaps**.
 
 **How GEOAuditor differs:**
 1. **Diagnostic, not subscription monitoring** — free, one-shot audit vs. recurring paid tracking.
-2. **Combines technical + AI-perception signals in one score** — most competitors only track the AI-mention side.
+2. **Combines technical + AI-perception signals in one score** — connects machine-readability directly to AI answers.
 3. **Transparent and rule-based** — every check is visible and reproducible, not a black-box dashboard.
 4. **Ships the fix, not just the finding** — generates a ready-to-download `robots.txt`/`llms.txt` on the spot instead of just telling the user they're missing one.
 
-## 10. Success Criteria for the MVP
+## 10. Success Criteria
 
 - A real URL, submitted end to end, produces a real Composite GEO Score backed by real scrape + real Gemini calls — no placeholder numbers anywhere.
 - The report clearly separates "why the AI can't read you" from "why the AI doesn't mention you," and ties fixes to specific score components.

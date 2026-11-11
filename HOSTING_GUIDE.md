@@ -41,7 +41,7 @@ Render provides free web service hosting for Python FastAPI apps.
 1. **Push your code to GitHub**:
    ```bash
    git add .
-   git commit -m "feat: complete GEO auditor with Gemini llms.txt, Indic benchmark and white-label export"
+   git commit -m "feat: complete GEO auditor with Gemini llms.txt, Indic benchmark and PDF export"
    git push origin main
    ```
 
@@ -59,7 +59,7 @@ Render provides free web service hosting for Python FastAPI apps.
 3. **Add Environment Variables in Render**:
    Under the **Environment** tab on Render, add:
    - `GEMINI_API_KEY`: *(Your Google Gemini API Key from Google AI Studio)*
-   - `GEMINI_MODEL`: `gemini-3.6-flash`
+   - `GEMINI_MODEL`: `gemini-3.5-flash`
    - `DATABASE_PATH`: `./geoauditor.db`
 
 4. **Deploy**:
@@ -103,16 +103,16 @@ Render provides free web service hosting for Python FastAPI apps.
 ## Step 3: Verify Your Live Deployment
 
 1. Open your live Vercel URL: `https://your-project.vercel.app`.
-2. Enter any domain (e.g. `github.com` or `stripe.com`) and click **Run Audit**.
+2. Enter any domain (e.g. `example.com`) and click **Run Audit**.
 3. Watch the real-time pipeline execute:
    - Reading site HTML, `/robots.txt`, `/sitemap.xml`, and `/llms.txt`.
    - Parsing schema, metadata, and semantic tags.
    - Executing buyer intent queries and Indic language queries against Gemini.
    - Synthesizing `/llms.txt` via Gemini according to the Howard 2024 spec.
    - Displaying the Composite Score, Technical Readiness, AI Model Prominence, and Prioritized Action Plan.
-4. Click **White-Label Client Report**:
-   - Customize Agency Name, Client Name, and Executive Notes.
-   - Click **Export PDF / Print** to save a pristine client deliverable.
+4. Click **Export Audit Report**:
+   - Customize Organization Name, Audited Brand, and Executive Notes.
+   - Click **Export PDF / Print** to save a clean audit deliverable.
 
 ---
 
@@ -123,7 +123,7 @@ If you prefer Railway instead of Render:
 2. Set **Root Directory** to `backend`.
 3. Add environment variables:
    - `GEMINI_API_KEY`: *(your key)*
-   - `GEMINI_MODEL`: `gemini-3.6-flash`
+   - `GEMINI_MODEL`: `gemini-3.5-flash`
    - `PORT`: `8000`
 4. In **Settings -> Networking**, click **Generate Domain** to get your public backend URL.
 5. Provide that URL to Vercel as `NEXT_PUBLIC_API_URL`.
@@ -136,5 +136,5 @@ If you prefer Railway instead of Render:
 |---|---|---|---|
 | `NEXT_PUBLIC_API_URL` | Vercel (Frontend) | Points the Next.js UI to your public FastAPI server | `https://geoauditor-backend.onrender.com` |
 | `GEMINI_API_KEY` | Render/Railway (Backend) | Google AI Studio key for live search queries & /llms.txt generation | `AIzaSy...` |
-| `GEMINI_MODEL` | Render/Railway (Backend) | Gemini model identifier | `gemini-3.6-flash` |
+| `GEMINI_MODEL` | Render/Railway (Backend) | Gemini model identifier | `gemini-3.5-flash` |
 | `DATABASE_PATH` | Render/Railway (Backend) | Path to SQLite database file | `./geoauditor.db` |

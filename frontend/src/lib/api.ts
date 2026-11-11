@@ -1,4 +1,4 @@
-import { JobStatusResponse, ReportData, RecentJobItem } from "./types";
+import { JobStatusResponse, ReportData, RecentJobItem, BrandResolveResponse, PreflightResponse } from "./types";
 
 function getApiBase(): string {
   let url = process.env.NEXT_PUBLIC_API_URL?.trim();
@@ -19,8 +19,10 @@ async function safeFetch(url: string, options?: RequestInit) {
   try {
     const res = await fetch(url, options);
     return res;
-  } catch (err: any) {
-    if (err?.name === "TypeError" || err?.message?.includes("fetch")) {
+  } catch (err: unknown) {
+    const errName = err instanceof Error ? err.name : "";
+    const errMsg = err instanceof Error ? err.message : "";
+    if (errName === "TypeError" || errMsg.includes("fetch")) {
       throw new Error(
         `Cannot connect to GEOAuditor backend at ${API_BASE}. Please make sure the backend server is running on port 8000.`
       );
@@ -32,6 +34,35 @@ async function safeFetch(url: string, options?: RequestInit) {
 export interface AuditOverrides {
   brand_name?: string;
   category?: string;
+  pasted_html?: string;
+}
+
+export async function resolveBrand(query: string): Promise<BrandResolveResponse> {
+  const res = await safeFetch(`${API_BASE}/api/resolve-brand`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.detail || "Failed to look up brand website.");
+  }
+  return data;
+}
+
+export async function preflightCheck(url: string): Promise<PreflightResponse> {
+  const res = await safeFetch(`${API_BASE}/api/preflight`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.detail || "Failed to reach website.");
+  }
+  return data;
 }
 
 export async function createAudit(
@@ -41,6 +72,7 @@ export async function createAudit(
   const body: Record<string, string> = { url };
   if (overrides.brand_name?.trim()) body.brand_name = overrides.brand_name.trim();
   if (overrides.category?.trim()) body.category = overrides.category.trim();
+  if (overrides.pasted_html?.trim()) body.pasted_html = overrides.pasted_html.trim();
 
   const res = await safeFetch(`${API_BASE}/api/audit`, {
     method: "POST",

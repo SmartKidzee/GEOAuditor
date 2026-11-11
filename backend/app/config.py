@@ -16,7 +16,7 @@ def get_gemini_api_key() -> str:
 
 def get_gemini_model() -> str:
     reload_env()
-    return os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+    return os.getenv("GEMINI_MODEL", "gemini-3.5-flash").strip()
 
 def get_gemini_base_url() -> str:
     """Optional override (proxy / gateway / local test server). Empty = Google's default endpoint."""
@@ -31,20 +31,20 @@ GEMINI_MODEL = get_gemini_model()
 DB_PATH = os.getenv("DATABASE_PATH", str(BASE_DIR / "geoauditor.db"))
 
 # Scoring Weights (explicitly named constants as mandated by PRD.md and rules.md)
-# Composite GEO Score = 0.25 * Technical Score + 0.75 * AI Visibility Score
-# AI visibility is the headline measurement; technical readiness is the diagnostic
-# that explains *why* visibility is high or low.
+# Composite GEO Score = 0.35 * Technical Score + 0.65 * AI Visibility Score
+# AI visibility is the primary measurement; technical readiness provides the essential
+# machine-readable foundation (crawlability, RFC 9309, /llms.txt, JSON-LD, semantic HTML).
 # If the AI probes could not run, the composite falls back to the technical score
 # alone (weights 1.0 / 0.0) and the report says so explicitly. No AI data is invented.
-WEIGHT_TECHNICAL: float = 0.25
-WEIGHT_AI_VISIBILITY: float = 0.75
+WEIGHT_TECHNICAL: float = 0.35
+WEIGHT_AI_VISIBILITY: float = 0.65
 
 # AI Visibility Score component weights (sum to 100). See scoring.compute_ai_visibility_score.
 AI_VIS_WEIGHTS = {
     "organic_discovery_en": 35.0,   # brand surfaces unprompted in English category answers
-    "organic_discovery_indic": 15.0,  # same, in Hindi / Kannada
+    "organic_discovery_indic": 10.0,  # same, in Hindi / Kannada
     "rank_prominence": 15.0,        # how high it is ranked when it does surface
-    "perception_accuracy": 25.0,    # does the model describe the brand correctly?
+    "perception_accuracy": 30.0,    # does the model know and describe the brand accurately?
     "domain_citation": 10.0,        # does the model attach the brand's official domain?
 }
 
@@ -102,7 +102,7 @@ CRAWLER_TIMEOUT_SECONDS: float = 15.0
 CRAWLER_USER_AGENT: str = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/126.0.0.0 Safari/537.36 (compatible; GEOAuditor/1.0; +https://geoauditor.dev)"
+    "Chrome/131.0.0.0 Safari/537.36"
 )
 
 # AI Bots tracked in robots.txt crawlability checks

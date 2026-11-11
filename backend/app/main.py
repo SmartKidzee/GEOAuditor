@@ -5,8 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from .models import (
     AuditCreateRequest,
     AuditCreateResponse,
+    BrandCandidate,
+    BrandResolveRequest,
+    BrandResolveResponse,
     JobStatusResponse,
     JobStatus,
+    PreflightRequest,
+    PreflightResponse,
 )
 from .database import (
     init_db,
@@ -16,8 +21,9 @@ from .database import (
     get_recent_jobs,
 )
 from .orchestrator import run_audit_pipeline
+from .ai_simulator import resolve_brand_websites
 from .config import GEMINI_API_KEY
-from .scraper import normalize_url, ScrapeError
+from .scraper import normalize_url, preflight_check, ScrapeError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("geoauditor.api")
@@ -76,6 +82,54 @@ def health_check():
     }
 
 
+@app.post("/api/resolve-brand", response_model=BrandResolveResponse)
+async def resolve_brand(request: BrandResolveRequest):
+    query = request.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Please enter a brand name or domain.")
+
+    # If it looks like a direct domain/URL (has a dot and no spaces), normalize immediately.
+    if "." in query and " " not in query:
+        try:
+            normalized = normalize_url(query)
+            from urllib.parse import urlparse
+            dom = (urlparse(normalized).netloc or "").lower().lstrip("www.")
+            brand_guess = dom.split(".")[0].capitalize() if dom else query
+            return BrandResolveResponse(
+                query=query,
+                is_direct_url=True,
+                candidates=[
+                    BrandCandidate(
+                        brand_name=brand_guess,
+                        domain=dom,
+                        url=normalized,
+                        description="Direct website URL provided.",
+                    )
+                ],
+            )
+        except ScrapeError:
+            pass
+
+    resolved = await resolve_brand_websites(query)
+    return BrandResolveResponse(
+        query=resolved.get("query", query),
+        is_direct_url=False,
+        candidates=[BrandCandidate(**c) for c in resolved.get("candidates", [])],
+    )
+
+
+@app.post("/api/preflight", response_model=PreflightResponse)
+async def preflight_audit(request: PreflightRequest):
+    raw_url = request.url.strip()
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="Website URL cannot be empty.")
+    try:
+        res = await preflight_check(raw_url)
+    except ScrapeError as se:
+        raise HTTPException(status_code=400, detail=str(se))
+    return PreflightResponse(**res)
+
+
 @app.post("/api/audit", response_model=AuditCreateResponse, status_code=status.HTTP_201_CREATED)
 async def start_audit(request: AuditCreateRequest, background_tasks: BackgroundTasks):
     raw_url = request.url.strip()
@@ -92,9 +146,15 @@ async def start_audit(request: AuditCreateRequest, background_tasks: BackgroundT
 
     brand_override = (request.brand_name or "").strip()[:80] or None
     category_override = (request.category or "").strip()[:80] or None
+    pasted_html = (request.pasted_html or "").strip()[:250000] or None
 
     # Dispatch pipeline to background task
-    background_tasks.add_task(run_audit_pipeline, job_id, normalized, brand_override, category_override)
+    if pasted_html:
+        background_tasks.add_task(
+            run_audit_pipeline, job_id, normalized, brand_override, category_override, pasted_html
+        )
+    else:
+        background_tasks.add_task(run_audit_pipeline, job_id, normalized, brand_override, category_override)
 
     return AuditCreateResponse(job_id=job_id, status=JobStatus.PENDING.value)
 

@@ -33,7 +33,7 @@ body {
   header, nav, footer, .print\:hidden {
     display: none !important;
   }
-  #white-label-report-printable {
+  #audit-report-printable {
     display: block !important;
     width: 100% !important;
     padding: 0 !important;

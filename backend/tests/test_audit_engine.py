@@ -7,9 +7,9 @@ from app.generator import generate_robots_txt_solution, generate_llms_txt_soluti
 from bs4 import BeautifulSoup
 
 
-def test_weights_are_explicit_25_75():
-    assert WEIGHT_TECHNICAL == 0.25
-    assert WEIGHT_AI_VISIBILITY == 0.75
+def test_weights_are_explicit_35_65():
+    assert WEIGHT_TECHNICAL == 0.35
+    assert WEIGHT_AI_VISIBILITY == 0.65
     assert (WEIGHT_TECHNICAL + WEIGHT_AI_VISIBILITY) == 1.0
 
 
@@ -194,17 +194,17 @@ def test_scoring_engine_pure_function():
 
     # AI visibility (hand-computed from the component formula):
     #   en 2/3 mentioned -> 0.6667 * 35 = 23.33
-    #   indic: hi 1/1, kn 0/1 -> mean 0.5 * 15 = 7.5
+    #   indic: hi 1/1, kn 0/1 -> mean 0.5 * 10 = 5.0
     #   rank: mentioned runs ranks 2, 1, 3 -> (0.85 + 1.0 + 0.7)/3 = 0.85 * 15 = 12.75
-    #   perception accurate -> 1.0 * 25 = 25
+    #   perception accurate -> 1.0 * 30 = 30.0
     #   citation 2/3 -> 0.6667 * 10 = 6.67
-    expected_ai = 23.33 + 7.5 + 12.75 + 25 + 6.67
+    expected_ai = 23.33 + 5.0 + 12.75 + 30.0 + 6.67
     assert res["ai_visibility_available"] is True
     assert res["ai_visibility_score"] == pytest.approx(expected_ai, abs=0.1)
 
-    # Composite = 0.25 * 90.0 + 0.75 * AI
-    assert res["composite_score"] == pytest.approx(0.25 * 90.0 + 0.75 * res["ai_visibility_score"], abs=0.1)
-    assert res["weight_technical"] == 0.25 and res["weight_ai_visibility"] == 0.75
+    # Composite = 0.35 * 90.0 + 0.65 * AI
+    assert res["composite_score"] == pytest.approx(0.35 * 90.0 + 0.65 * res["ai_visibility_score"], abs=0.1)
+    assert res["weight_technical"] == 0.35 and res["weight_ai_visibility"] == 0.65
     assert res["score_note"] is None
 
     # Action Plan prioritisation: nothing critical here (tech fine, brand recognised)

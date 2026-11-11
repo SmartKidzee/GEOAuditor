@@ -209,11 +209,81 @@ def extract_navigation_links(soup: BeautifulSoup, base_url: str) -> List[Dict[st
     return links
 
 
+def _extract_body_excerpt(soup: BeautifulSoup, limit: int = 500) -> str:
+    """Extracts a concise readable excerpt from main/paragraph text, ignoring nav/footer chrome."""
+    main = soup.find("main") or soup.body
+    if not main:
+        return ""
+    paragraphs = [clean_text(p.get_text()) for p in main.find_all("p")]
+    substantial = [p for p in paragraphs if len(p.split()) >= 5]
+    text = " ".join(substantial) if substantial else clean_text(main.get_text())
+    return text[:limit].strip()
+
+
 def analyze_html_content(crawl_data: Dict[str, Any]) -> Dict[str, Any]:
-    raw_html = crawl_data["html"]
+    raw_html = crawl_data.get("html", "")
     url = crawl_data["url"]
     base_url = crawl_data["base_url"]
     domain = crawl_data["domain"]
+    blocked_by_waf = bool(crawl_data.get("blocked_by_waf", False))
+    block_status_code = crawl_data.get("block_status_code")
+    block_reason = crawl_data.get("block_reason")
+
+    # 5. Robots.txt & Crawlability (available even if main HTML was WAF-gated)
+    robots_data = parse_robots_txt(crawl_data["robots_txt"]["content"]) if crawl_data["robots_txt"]["exists"] else parse_robots_txt("")
+    sitemap_exists = crawl_data["sitemap_xml"]["exists"] or len(robots_data["sitemaps"]) > 0
+    llms_exists = crawl_data["llms_txt"]["exists"]
+
+    crawlability = {
+        "robots_txt_exists": crawl_data["robots_txt"]["exists"],
+        "robots_parsed": robots_data,
+        "sitemap_exists": sitemap_exists,
+        "sitemap_status_code": crawl_data["sitemap_xml"]["status_code"],
+        "llms_txt_exists": llms_exists,
+        "llms_status_code": crawl_data["llms_txt"]["status_code"],
+    }
+
+    if blocked_by_waf:
+        dom = domain.lower()
+        if dom.startswith("www."):
+            dom = dom[4:]
+        brand_name = dom.split(".")[0].capitalize() if dom else "Brand"
+        return {
+            "url": url,
+            "base_url": base_url,
+            "domain": domain,
+            "brand_name": brand_name,
+            "category": "",
+            "blocked_by_waf": True,
+            "block_status_code": block_status_code,
+            "block_reason": block_reason,
+            "navigation_links": [],
+            "metadata": {
+                "title": "",
+                "title_length": 0,
+                "meta_description": "",
+                "description_length": 0,
+            },
+            "headings": {
+                "h1_count": 0,
+                "h1_list": [],
+                "h2_count": 0,
+                "h2_sample": [],
+                "h3_count": 0,
+            },
+            "schema": {
+                "count": 0,
+                "types": [],
+                "schemas": [],
+                "descriptions": [],
+            },
+            "semantic_html": {
+                "elements": {"header": 0, "nav": 0, "main": 0, "article": 0, "section": 0, "footer": 0},
+                "word_count": 0,
+                "body_excerpt": "",
+            },
+            "crawlability": crawlability,
+        }
 
     soup = BeautifulSoup(raw_html, "html.parser")
 
@@ -239,6 +309,7 @@ def analyze_html_content(crawl_data: Dict[str, Any]) -> Dict[str, Any]:
     json_ld_scripts = soup.find_all("script", type="application/ld+json")
     detected_schemas: List[Dict[str, Any]] = []
     schema_types: List[str] = []
+    schema_descriptions: List[str] = []
 
     for s in json_ld_scripts:
         try:
@@ -260,6 +331,9 @@ def analyze_html_content(crawl_data: Dict[str, Any]) -> Dict[str, Any]:
                         schema_types.extend(t)
                     else:
                         schema_types.append(t)
+                    desc = item.get("description")
+                    if isinstance(desc, str) and desc.strip():
+                        schema_descriptions.append(clean_text(desc)[:240])
                     detected_schemas.append(item)
         except Exception:
             continue
@@ -275,11 +349,7 @@ def analyze_html_content(crawl_data: Dict[str, Any]) -> Dict[str, Any]:
     }
     body_text = clean_text(soup.body.get_text()) if soup.body else ""
     word_count = len(body_text.split())
-
-    # 5. Robots.txt & Crawlability
-    robots_data = parse_robots_txt(crawl_data["robots_txt"]["content"]) if crawl_data["robots_txt"]["exists"] else parse_robots_txt("")
-    sitemap_exists = crawl_data["sitemap_xml"]["exists"] or len(robots_data["sitemaps"]) > 0
-    llms_exists = crawl_data["llms_txt"]["exists"]
+    body_excerpt = _extract_body_excerpt(soup)
 
     return {
         "url": url,
@@ -287,6 +357,9 @@ def analyze_html_content(crawl_data: Dict[str, Any]) -> Dict[str, Any]:
         "domain": domain,
         "brand_name": brand_name,
         "category": category,
+        "blocked_by_waf": False,
+        "block_status_code": None,
+        "block_reason": None,
         "navigation_links": nav_links,
         "metadata": {
             "title": title_text,
@@ -305,17 +378,12 @@ def analyze_html_content(crawl_data: Dict[str, Any]) -> Dict[str, Any]:
             "count": len(detected_schemas),
             "types": list(set(schema_types)),
             "schemas": detected_schemas[:5],  # keep preview
+            "descriptions": schema_descriptions[:3],
         },
         "semantic_html": {
             "elements": semantic_elements,
             "word_count": word_count,
+            "body_excerpt": body_excerpt,
         },
-        "crawlability": {
-            "robots_txt_exists": crawl_data["robots_txt"]["exists"],
-            "robots_parsed": robots_data,
-            "sitemap_exists": sitemap_exists,
-            "sitemap_status_code": crawl_data["sitemap_xml"]["status_code"],
-            "llms_txt_exists": llms_exists,
-            "llms_status_code": crawl_data["llms_txt"]["status_code"],
-        },
+        "crawlability": crawlability,
     }

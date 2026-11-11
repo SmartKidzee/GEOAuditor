@@ -2,37 +2,42 @@
 
 import React, { useState } from "react";
 import { ReportData } from "../lib/types";
+import { generateAuditPdf } from "../lib/pdfGenerator";
 import {
   Printer,
   X,
-  Building,
-  User,
-  Calendar,
-  Sparkles,
   ShieldCheck,
-  CheckCircle2,
-  AlertOctagon,
   Languages,
   BarChart3,
   Download,
-  FileText,
+  FileDown,
+  Lock,
 } from "lucide-react";
 
-interface WhiteLabelReportModalProps {
+interface ReportExportModalProps {
   report: ReportData;
   isOpen: boolean;
   onClose: () => void;
 }
 
-export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelReportModalProps) {
-  const [agencyName, setAgencyName] = useState("Vanguard Digital AI & Search Strategy");
-  const [clientName, setClientName] = useState(report.brand_name || "Client Brand");
-  const [auditorName, setAuditorName] = useState("Generative Engine Optimization (GEO) Practice");
+export function ReportExportModal({ report, isOpen, onClose }: ReportExportModalProps) {
+  const [organizationName, setOrganizationName] = useState("GEOAuditor");
+  const [targetName, setTargetName] = useState(report.brand_name || report.domain);
+  const [auditorName, setAuditorName] = useState("Generative Engine Optimization (GEO) Audit");
   const [customNotes, setCustomNotes] = useState(
     `This report audits the generative AI search readiness and attribution presence of ${report.domain}. Key focus areas include RFC 9309 crawler directives, the llmstxt.org machine context standard, and empirical visibility across Google Gemini buyer queries in English and Indic languages.`
   );
 
   if (!isOpen) return null;
+
+  const handleDownloadPdf = () => {
+    generateAuditPdf(report, {
+      organizationName,
+      targetName,
+      subtitle: auditorName,
+      customNotes,
+    });
+  };
 
   const handlePrint = () => {
     window.print();
@@ -43,7 +48,7 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `white-label-audit-${report.domain}-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `geoauditor-report-${report.domain}-${new Date().toISOString().slice(0, 10)}.json`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -57,7 +62,7 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
         <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between sticky top-0 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md z-10 print:hidden">
           <div className="flex items-center gap-2">
             <span className="text-xs font-bold uppercase tracking-wider text-purple-600 dark:text-purple-400">
-              Agency White-Label Client Report Exporter
+              Executive Audit Report Exporter
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -70,10 +75,17 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
             </button>
             <button
               onClick={handlePrint}
-              className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold text-white bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 transition cursor-pointer shadow-sm"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-700 dark:text-zinc-300 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition cursor-pointer"
             >
               <Printer className="w-3.5 h-3.5" />
-              <span>Export PDF / Print</span>
+              <span>Print</span>
+            </button>
+            <button
+              onClick={handleDownloadPdf}
+              className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition cursor-pointer shadow-sm"
+            >
+              <FileDown className="w-3.5 h-3.5" />
+              <span>Download PDF</span>
             </button>
             <button
               onClick={onClose}
@@ -84,32 +96,32 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
           </div>
         </div>
 
-        {/* Agency Customizer Controls (Hidden in Print) */}
+        {/* Report Customizer Controls (Hidden in Print) */}
         <div className="p-5 bg-zinc-50 dark:bg-zinc-950/60 border-b border-zinc-200 dark:border-zinc-800 print:hidden">
           <h4 className="text-xs font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider mb-3">
-            Customize White-Label Report Details
+            Customize Report Summary Details
           </h4>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs mb-3">
             <div>
-              <label className="text-zinc-500 font-medium block mb-1">Agency / Consultancy Name</label>
+              <label className="text-zinc-500 font-medium block mb-1">Report Header / Organization</label>
               <input
                 type="text"
-                value={agencyName}
-                onChange={(e) => setAgencyName(e.target.value)}
+                value={organizationName}
+                onChange={(e) => setOrganizationName(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-900 dark:text-zinc-100"
               />
             </div>
             <div>
-              <label className="text-zinc-500 font-medium block mb-1">Prepared For (Client Name)</label>
+              <label className="text-zinc-500 font-medium block mb-1">Audited Brand</label>
               <input
                 type="text"
-                value={clientName}
-                onChange={(e) => setClientName(e.target.value)}
+                value={targetName}
+                onChange={(e) => setTargetName(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-900 dark:text-zinc-100"
               />
             </div>
             <div>
-              <label className="text-zinc-500 font-medium block mb-1">Lead Auditor / Team</label>
+              <label className="text-zinc-500 font-medium block mb-1">Report Subtitle</label>
               <input
                 type="text"
                 value={auditorName}
@@ -130,7 +142,7 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
         </div>
 
         {/* PRINTABLE REPORT BODY */}
-        <div id="white-label-report-printable" className="p-8 sm:p-10 space-y-8 bg-white dark:bg-zinc-900 print:bg-white print:text-black print:p-6">
+        <div id="audit-report-printable" className="p-8 sm:p-10 space-y-8 bg-white dark:bg-zinc-900 print:bg-white print:text-black print:p-6">
           {/* Executive Header */}
           <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-6 pb-6 border-b-2 border-zinc-900 dark:border-zinc-100 print:border-black">
             <div>
@@ -138,16 +150,16 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
                 Executive Generative AI Search Audit
               </div>
               <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-zinc-900 dark:text-zinc-50 print:text-black">
-                {agencyName}
+                {organizationName}
               </h1>
               <p className="text-xs text-zinc-500 print:text-zinc-600 mt-1">
-                Prepared by: <span className="font-semibold text-zinc-800 dark:text-zinc-200 print:text-black">{auditorName}</span>
+                Scope: <span className="font-semibold text-zinc-800 dark:text-zinc-200 print:text-black">{auditorName}</span>
               </p>
             </div>
 
             <div className="sm:text-right text-xs text-zinc-500 print:text-zinc-600 space-y-1">
               <div>
-                Client: <span className="font-bold text-zinc-900 dark:text-zinc-100 print:text-black">{clientName}</span>
+                Brand: <span className="font-bold text-zinc-900 dark:text-zinc-100 print:text-black">{targetName}</span>
               </div>
               <div>
                 Target: <span className="font-mono text-zinc-800 dark:text-zinc-200 print:text-black">{report.url}</span>
@@ -201,7 +213,7 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
             </div>
           </div>
 
-          {/* Attribution & Source Breakdown (Paper Section 4) */}
+          {/* Attribution & Source Breakdown */}
           <div>
             <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 print:text-zinc-700 mb-3 flex items-center gap-1.5">
               <ShieldCheck className="w-3.5 h-3.5 text-zinc-600" />
@@ -229,7 +241,7 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
             </div>
           </div>
 
-          {/* Multilingual Indic Language Matrix (Paper Section 3) */}
+          {/* Multilingual Indic Language Matrix */}
           {report.ai_visibility_findings.multilingual_breakdown && report.ai_visibility_findings.multilingual_breakdown.length > 0 && (
             <div>
               <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 print:text-zinc-700 mb-3 flex items-center gap-1.5">
@@ -259,7 +271,7 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
             </div>
           )}
 
-          {/* Competitor Share of Voice (Otterly.ai Benchmark) */}
+          {/* Competitor Share of Voice */}
           {report.ai_visibility_findings.competitor_share_of_voice && Object.keys(report.ai_visibility_findings.competitor_share_of_voice).length > 0 && (
             <div>
               <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 print:text-zinc-700 mb-3 flex items-center gap-1.5">
@@ -318,13 +330,24 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
               ))}
           </div>
 
+          {/* GDPR Compliance & Data Privacy Notice */}
+          <div className="bg-emerald-50/70 dark:bg-emerald-950/20 p-4 rounded-xl border border-emerald-200 dark:border-emerald-900/50 print:bg-emerald-50 print:border-emerald-300">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300 print:text-emerald-900 mb-1.5 flex items-center gap-1.5">
+              <Lock className="w-3.5 h-3.5" />
+              GDPR Compliance &amp; Data Privacy Notice
+            </h3>
+            <p className="text-[11px] leading-relaxed text-emerald-900/90 dark:text-emerald-200/90 print:text-emerald-950">
+              <strong>Data Minimization (Art. 5(1)(c)):</strong> This report processes only publicly available domain configuration and synthetic AI search queries. Zero personal data (PII), tracking cookies, or user profiles are collected. Audit records are indexed solely by anonymous UUID (<span className="font-mono">{report.job_id}</span>) with no third-party data brokering.
+            </p>
+          </div>
+
           {/* Report Footer */}
           <div className="pt-6 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-between text-[11px] text-zinc-400 print:text-zinc-600">
             <div>
-              Generated via GEOAuditor Enterprise • Academic Foundation: NIE Mysuru Literature Review
+              Generated via GEOAuditor • Research Framework: NIE Mysuru Literature Review
             </div>
             <div>
-              Confidential Client Deliverable
+              GDPR-Compliant Audit Report
             </div>
           </div>
         </div>
@@ -332,3 +355,4 @@ export function WhiteLabelReportModal({ report, isOpen, onClose }: WhiteLabelRep
     </div>
   );
 }
+

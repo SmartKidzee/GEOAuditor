@@ -30,7 +30,7 @@ The architectural design of GEOAuditor directly integrates five core pillars fro
 
 1. **Generative Engine Optimization (GEO)**: Operationalizes the findings of *Aggarwal et al. (KDD 2024)*, which demonstrated that structured entity citations, technical authority signals, and direct factual summaries improve source visibility in generative engine responses by up to 40%.
 2. **Multilingual and Regional Evaluation (IndicGenBench / Indic QA)**: While existing GEO studies focus almost exclusively on English, regional search queries in non-Latin scripts suffer significant representation disparities. GEOAuditor implements multilingual testing across Hindi (Devanagari script) and Kannada (Dravidian language family) alongside English to measure linguistic bias in generative engine discovery.
-3. **Fine-Grained Attribution & Share of Voice**: Drawing upon attribution modeling in retrieval-augmented generation (RAG) and industry standards established by platforms such as Otterly.ai, GEOAuditor disaggregates brand presence into three orthogonal metrics:
+3. **Fine-Grained Attribution & Share of Voice**: Drawing upon attribution modeling in retrieval-augmented generation (RAG) and modern AI citation analytics practices, GEOAuditor disaggregates brand presence into three orthogonal metrics:
    * **Mention Rate ($M_r$)**: The percentage of evaluative queries where the target brand is present.
    * **Recommendation Rate ($R_r$)**: The percentage of queries where the generative model affirmatively recommends the brand as a top choice.
    * **Domain Citation Rate ($C_r$)**: The percentage of queries where the engine explicitly attributes authority to the brand's verified domain hostname.
@@ -47,18 +47,18 @@ GEOAuditor computes an empirical, deterministic composite score $S_{\text{compos
 $$S_{\text{composite}} = w_{\text{tech}} \cdot S_{\text{tech}} + w_{\text{vis}} \cdot S_{\text{vis}}$$
 
 Where:
-* $w_{\text{tech}} = 0.25$ (Technical Readiness Weight)
-* $w_{\text{vis}} = 0.75$ (AI Visibility Weight)
+* $w_{\text{tech}} = 0.35$ (Technical Readiness Weight)
+* $w_{\text{vis}} = 0.65$ (AI Visibility Weight)
 * $w_{\text{tech}} + w_{\text{vis}} = 1.00$
 
 ### 1. Technical Readiness Score ($S_{\text{tech}} \in [0, 100]$)
 
-$$S_{\text{tech}} = S_{\text{meta}} + S_{\text{schema}} + S_{\text{crawl}} + S_{\text{semantic}}$$
+$$S_{\text{tech}} = S_{\text{crawl}} + S_{\text{schema}} + S_{\text{meta}} + S_{\text{semantic}}$$
 
-* **Metadata & Headings ($S_{\text{meta}} \in [0, 25]$)**: Page title presence, length bounds (30-65 chars), meta description presence and quality (100-165 chars), and strict single `<h1>` hierarchy.
+* **Crawler & Spec Accessibility ($S_{\text{crawl}} \in [0, 30]$)**: RFC 9309 compliance, absence of broad AI bot disallows, XML sitemap discovery, and live `/llms.txt` verification.
 * **Schema.org Structured Data ($S_{\text{schema}} \in [0, 25]$)**: Validation of JSON-LD entity structures (`Organization`, `WebSite`, `Product`, `SoftwareApplication`, `FAQPage`, `Article`).
-* **Crawler & Spec Accessibility ($S_{\text{crawl}} \in [0, 25]$)**: RFC 9309 compliance, absence of broad AI bot disallows, XML sitemap discovery.
-* **Semantic Architecture & Machine Context ($S_{\text{semantic}} \in [0, 25]$)**: Content-to-HTML density ratio, OpenGraph protocol compliance, and live `/llms.txt` verification.
+* **Metadata & Headings ($S_{\text{meta}} \in [0, 25]$)**: Page title presence, length bounds (20-70 chars), meta description presence and quality (70-180 chars), and strict single `<h1>` hierarchy.
+* **Semantic Architecture ($S_{\text{semantic}} \in [0, 20]$)**: HTML5 semantic landmarks (`<main>`, `<header>`, `<nav>`, `<footer>`, `<article>`, `<section>`).
 
 ### 2. AI Visibility Score ($S_{\text{vis}} \in [0, 100]$)
 
@@ -78,9 +78,9 @@ $$S_{\text{vis}} = \min\left(\text{cap}(v),\; \frac{\sum_{k} w_k \, c_k}{\sum_{k
 | Component $c_k$ | Weight $w_k$ | Definition |
 |---|---|---|
 | Organic discovery (EN) | 35 | mentions / successful English runs |
-| Organic discovery (HI, KN) | 15 | mean of per-language mention rates |
+| Organic discovery (HI, KN) | 10 | mean of per-language mention rates |
 | Rank prominence | 15 | mean rank score of runs where the brand appeared (rank 1 = 1.0, 2 = 0.85, 3 = 0.7, 4 = 0.55, 5 = 0.4) |
-| Perception accuracy | 25 | accurate 1.0, partial 0.6, unknown 0.15, hallucinated 0.05 |
+| Perception accuracy | 30 | accurate 1.0, partial 0.6, unknown 0.15, hallucinated 0.05 |
 | Domain citation | 10 | share of English runs where the model supplied the brand's domain |
 
 * **Knowledge gating:** $\text{cap}(v)$ is 45 when the model does not know the brand and 40 when it describes it wrongly, because a brand the model cannot describe is not "visible" even if a name match occurred.
@@ -109,8 +109,8 @@ $$S_{\text{vis}} = \min\left(\text{cap}(v),\; \frac{\sum_{k} w_k \, c_k}{\sum_{k
 +------------------+           +-------------------+           +-------------------+
 |  Async Crawler   |           | Technical Analyzer|           | AI Simulator      |
 |  & Spec Prober   |           | & Schema Parser   |           | (Google Gemini)   |
-|  - RFC 9309      |           | - JSON-LD Schema  |           | - Single-Shot     |
-|  - robots.txt    |           | - Heading Tree    |           |   Batch Prompt    |
+|  - RFC 9309      |           | - JSON-LD Schema  |           | - Multi-Probe     |
+|  - robots.txt    |           | - Heading Tree    |           |   Discovery Engine|
 |  - sitemap.xml   |           | - OpenGraph Tags  |           | - English Queries |
 |  - /llms.txt     |           | - Semantic HTML   |           | - Indic Queries   |
 +--------+---------+           +---------+---------+           +---------+---------+
@@ -120,7 +120,7 @@ $$S_{\text{vis}} = \min\left(\text{cap}(v),\; \frac{\sum_{k} w_k \, c_k}{\sum_{k
                                          v
                   +----------------------------------------------+
                   |            Deterministic Scoring             |
-                  |       25% Technical + 75% AI Visibility      |
+                  |       35% Technical + 65% AI Visibility      |
                   +----------------------+-----------------------+
                                          |
                                          v
@@ -129,7 +129,7 @@ $$S_{\text{vis}} = \min\left(\text{cap}(v),\; \frac{\sum_{k} w_k \, c_k}{\sum_{k
                   |  - RFC 9309 robots.txt remediation           |
                   |  - Howard (2024) /llms.txt synthesis         |
                   |  - Deep RAG /llms-full.txt context           |
-                  |  - White-Label Agency PDF Export             |
+                  |  - Executive PDF & JSON Report Export        |
                   +----------------------------------------------+
 ```
 
@@ -186,7 +186,7 @@ GEOAuditor/
 |   |   |   |-- SolutionCard.tsx     # Spec-compliant /llms.txt copy & download panel
 |   |   |   |-- SubScoreCard.tsx     # Technical vs. AI Visibility metric cards
 |   |   |   |-- TechnicalSignals.tsx # Signal breakdown checklist
-|   |   |   `-- WhiteLabelReportModal.tsx # Customizable agency export & print-to-PDF
+|   |   |   `-- ReportExportModal.tsx     # Executive PDF & JSON report exporter
 |   |   `-- lib/
 |   |       |-- api.ts               # Type-safe API client
 |   |       `-- types.ts             # TypeScript interface definitions
@@ -233,7 +233,7 @@ Edit `backend/.env` and supply your Gemini API key:
 
 ```ini
 GEMINI_API_KEY=your_actual_gemini_api_key_here
-GEMINI_MODEL=gemini-3.8-flash
+GEMINI_MODEL=gemini-3.5-flash
 DATABASE_PATH=./geoauditor.db
 ```
 

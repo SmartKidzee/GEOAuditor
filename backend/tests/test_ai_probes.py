@@ -65,6 +65,19 @@ def make_handler(organic_answers, perception=None, judge=None):
             return judge
         if "What is Acme Metrics" in prompt:
             return perception
+        if "Compare Acme Metrics" in prompt:
+            return json.dumps({
+                "sentiment": "positive", "recommended": True,
+                "summary": "Acme Metrics leads in real-time dashboards.",
+                "strengths": ["Fast"], "limitations": ["Niche"],
+                "alternatives": [{"name": "Mixpanel", "website": "mixpanel.com"}],
+            })
+        if "A buyer evaluating solutions" in prompt:
+            return json.dumps({
+                "sentiment": "positive", "recommended": True,
+                "summary": "Recommended for real-time startup analytics.",
+                "trust_signals": ["Reliable"], "caveats": ["Smaller ecosystem"],
+            })
         if "What are the best" in prompt:
             answer = organic_answers[min(state["i"], len(organic_answers) - 1)]
             state["i"] += 1
@@ -195,15 +208,20 @@ def test_probe_plan_and_no_brand_leak_into_organic_prompts():
     client = FakeClient(make_handler([answer]))
     raw = run(client)
 
-    # 1 category + 3 English + 1 Hindi + 1 Kannada + 1 perception + 1 judge
-    assert len(client.prompts) == 8
-    assert raw["planned_probes"] == 6  # 5 organic + perception
+    # 1 perception + 1 judge + 1 category + 4 EN organic + 1 HI + 1 KN + 2 branded deep-dive = 11 calls, 9 probes <= 10
+    assert len(client.prompts) == 11
+    assert raw["planned_probes"] == 9
+    assert raw["planned_probes"] <= 10
     assert [q["probe_id"] for q in raw["queries"]] == [
-        "organic_en#1", "organic_en#2", "organic_en#3", "organic_hi#1", "organic_kn#1", "perception#1",
+        "perception#1",
+        "organic_en#1", "organic_en#2",
+        "organic_usecase#1", "organic_usecase#2",
+        "organic_hi#1", "organic_kn#1",
+        "brand_comparison#1", "brand_reputation#1",
     ]
 
     organic_prompts = [p for p in client.prompts if "A person asks an AI assistant" in p and "What is Acme" not in p]
-    assert len(organic_prompts) == 5
+    assert len(organic_prompts) == 6
     for prompt in organic_prompts:
         assert BRAND not in prompt and DOMAIN not in prompt
         assert "meta" not in prompt.lower().replace("metrics", "")  # meta description is never sent
@@ -214,14 +232,14 @@ def test_probe_plan_and_no_brand_leak_into_organic_prompts():
 def test_repeated_runs_measure_consistency_and_score_is_explainable():
     hit = recs(("Mixpanel", "mixpanel.com"), ("Acme Metrics", "acmemetrics.io"))
     miss = recs(("Mixpanel", "mixpanel.com"), ("Amplitude", "amplitude.com"))
-    client = FakeClient(make_handler([hit, miss, hit]))
+    client = FakeClient(make_handler([hit, miss, hit, hit]))
     raw = run(client)
 
     findings = build_ai_findings(raw, BRAND)
     assert findings.available
-    assert (findings.organic_runs, findings.organic_mentions) == (3, 2)
-    assert findings.mention_rate == pytest.approx(66.7, abs=0.1)
-    assert findings.recommendation_rate == pytest.approx(66.7, abs=0.1)
+    assert (findings.organic_runs, findings.organic_mentions) == (4, 3)
+    assert findings.mention_rate == pytest.approx(75.0, abs=0.1)
+    assert findings.recommendation_rate == pytest.approx(75.0, abs=0.1)
 
     comps = findings.score_components
     assert set(comps) == set(AI_VIS_WEIGHTS)
@@ -324,7 +342,7 @@ def test_partial_failure_excludes_failed_probes_and_reports_coverage():
 
     findings = build_ai_findings(run(FakeClient(handler)), BRAND)
     assert findings.available
-    assert findings.organic_runs == 2  # the failed run is not counted as a miss
+    assert findings.organic_runs == 3  # the failed run is not counted as a miss
     assert findings.mention_rate == 100.0
     assert findings.coverage < 1.0
     assert any("excluded from scoring" in n for n in findings.notes)
@@ -346,7 +364,7 @@ def test_formula_perfect_and_zero():
     zero, _, _ = compute_ai_visibility_score(
         en_rate=0, indic_rate=0, rank_value=0, perception_value=0.05, citation_rate=0, perception_verdict=None
     )
-    assert zero == pytest.approx(1.2, abs=0.1)
+    assert zero == pytest.approx(1.5, abs=0.1)
 
 
 def test_formula_renormalises_when_a_component_is_unmeasured():
@@ -468,3 +486,28 @@ def test_empty_category_and_no_site_facts_do_not_break_the_run():
     assert raw["category_used"] == "products and services"
     assert raw["perception"]["judged_by"] == "none"  # nothing to verify against, stated honestly
     assert not any("strict fact-checker" in p for p in client.prompts)
+
+
+def test_gemini_client_puts_503_model_on_cooldown(monkeypatch):
+    c, calls = client_with(lambda m, n: FakeAPIError(503) if m == "m1" else "ok", monkeypatch)
+    assert asyncio.run(c.generate("p")).model == "m2"
+    asyncio.run(c.generate("p"))
+    assert calls == ["m1", "m2", "m2"]  # m1 skipped while on cooldown
+
+
+def test_secondary_category_used_on_usecase_runs():
+    hit = recs(("Acme Metrics", "acmemetrics.io"))
+    seen_cats = []
+
+    def handler(prompt):
+        if "market category" in prompt:
+            return json.dumps({"category": "product analytics", "secondary_category": "web analytics tools"})
+        if "What are the best" in prompt:
+            seen_cats.append(prompt)
+            return hit
+        return make_handler([hit])(prompt)
+
+    raw = run(FakeClient(handler))
+    assert raw["category_used"] == "product analytics"
+    assert any("web analytics tools" in p for p in seen_cats)
+    assert any("product analytics" in p for p in seen_cats)

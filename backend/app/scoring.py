@@ -521,7 +521,7 @@ def build_ai_findings(raw: Dict[str, Any], brand_name: str) -> AiVisibilityFindi
     if mentioned_runs:
         rank_value: Optional[float] = sum(rank_score(q.rank) for q in mentioned_runs) / len(mentioned_runs)
     else:
-        rank_value = 0.0
+        rank_value = None
 
     perception_value = (
         perception.score / 100 if perception and perception.verdict != "unavailable" else None
@@ -754,15 +754,64 @@ def calculate_audit_score(
     """
     brand_name = analyzed_content.get("brand_name", "")
     category = analyzed_content.get("category", "")
+    blocked_by_waf = bool(analyzed_content.get("blocked_by_waf", False))
+    block_status_code = analyzed_content.get("block_status_code")
+    block_reason = analyzed_content.get("block_reason")
 
     # 1. Technical checks
     crawl_check, crawl_issues = score_crawlability(analyzed_content.get("crawlability", {}))
-    schema_check, schema_issues = score_schema(analyzed_content.get("schema", {}), brand_name)
-    meta_check, meta_issues = score_metadata_and_headings(
-        analyzed_content.get("metadata", {}),
-        analyzed_content.get("headings", {}),
-    )
-    semantic_check, semantic_issues = score_semantic_html(analyzed_content.get("semantic_html", {}))
+    if blocked_by_waf:
+        reason_text = block_reason or f"HTTP {block_status_code} human verification / bot protection"
+        schema_check = TechnicalSignalCheck(
+            name="JSON-LD & Schema Markup",
+            status=CheckStatus.FAIL,
+            score=0.0,
+            max_score=25.0,
+            details=f"Could not inspect HTML schema because the site returned {reason_text}.",
+            evidence={"blocked_by_waf": True, "status_code": block_status_code},
+        )
+        meta_check = TechnicalSignalCheck(
+            name="Metadata & Heading Structure",
+            status=CheckStatus.FAIL,
+            score=0.0,
+            max_score=25.0,
+            details=f"Could not inspect metadata/headings because the site returned {reason_text}.",
+            evidence={"blocked_by_waf": True, "status_code": block_status_code},
+        )
+        semantic_check = TechnicalSignalCheck(
+            name="Semantic HTML & Architecture",
+            status=CheckStatus.FAIL,
+            score=0.0,
+            max_score=20.0,
+            details=f"Could not inspect semantic HTML because the site returned {reason_text}.",
+            evidence={"blocked_by_waf": True, "status_code": block_status_code},
+        )
+        schema_issues = [
+            ActionPlanItem(
+                severity=Severity.CRITICAL,
+                title=f"Site Blocks Automated Crawlers (HTTP {block_status_code} Human Verification / WAF)",
+                detail=(
+                    f"The target site responded with {reason_text}, preventing automated crawlers from reading "
+                    "HTML content, metadata, and JSON-LD schema. AI search crawlers (GPTBot, PerplexityBot, ClaudeBot) "
+                    "may encounter the same block unless explicitly allowlisted."
+                ),
+                related_check="Crawlability & Bot Protection",
+                recommendation=(
+                    "GEOAuditor respects human verification and CAPTCHA gates and does not bypass them. "
+                    "If you manage this site, allowlist verified AI crawler user-agents/IPs in your CDN or WAF "
+                    "(such as Cloudflare Bot Management) while keeping verification enabled for untrusted traffic."
+                ),
+            )
+        ]
+        meta_issues = []
+        semantic_issues = []
+    else:
+        schema_check, schema_issues = score_schema(analyzed_content.get("schema", {}), brand_name)
+        meta_check, meta_issues = score_metadata_and_headings(
+            analyzed_content.get("metadata", {}),
+            analyzed_content.get("headings", {}),
+        )
+        semantic_check, semantic_issues = score_semantic_html(analyzed_content.get("semantic_html", {}))
 
     technical_score = round(crawl_check.score + schema_check.score + meta_check.score + semantic_check.score, 1)
 
@@ -774,7 +823,13 @@ def calculate_audit_score(
         semantic_html=semantic_check,
         extracted_brand=brand_name,
         extracted_category=category,
-        summary=f"Technical Readiness: {technical_score}/100",
+        summary=(
+            f"Technical Readiness: {technical_score}/100 (HTML blocked by HTTP {block_status_code} WAF/CAPTCHA)"
+            if blocked_by_waf
+            else f"Technical Readiness: {technical_score}/100"
+        ),
+        crawl_blocked=blocked_by_waf,
+        crawl_block_reason=block_reason,
     )
 
     # 2. AI visibility (measured from real probe answers, or explicitly unavailable)

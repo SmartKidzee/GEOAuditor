@@ -32,7 +32,7 @@ This is the single most important rule in this document. Nothing in the shipped 
 
 **Report View**
 - Composite score as the visual anchor (large number, 0–100).
-- Technical Score / AI Visibility Score shown as two clearly labeled sub-scores with their weights (25% / 75%) visible, not hidden.
+- Technical Score / AI Visibility Score shown as two clearly labeled sub-scores with their weights (35% / 65%) visible, not hidden.
 - Findings grouped by the 🔴 Critical / 🟡 Warning / 🟢 Opportunity severity system — consistent color coding used nowhere else in the UI (so it stays meaningful).
 - Each finding shows: what was checked, what was found (with real extracted evidence — the actual meta tag, the actual missing schema type, the actual AI response excerpt), and the specific fix.
 

@@ -13,9 +13,6 @@ export function Navbar() {
           <div>
             <div className="font-bold text-base tracking-tight text-zinc-900 dark:text-zinc-50 flex items-center gap-1.5">
               GEOAuditor
-              <span className="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300">
-                MVP
-              </span>
             </div>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 -mt-0.5 hidden sm:block">
               AI Brand Visibility & Technical Readiness

@@ -19,8 +19,6 @@ import {
   Activity,
   ShieldCheck,
   Languages,
-  Cpu,
-  Zap,
   Check,
 } from "lucide-react";
 import Link from "next/link";
@@ -80,10 +78,10 @@ const STEPS: StepConfig[] = [
     badge: "Step 4 of 5",
     icon: <Sparkles className="w-4 h-4" />,
     subtasks: [
-      "Inferring your market category from the site, without naming your brand",
-      "Running repeated organic-discovery prompts: does the AI recommend you unprompted?",
-      "Repeating the same question in Hindi and Kannada",
-      "Probing brand perception and fact-checking it against your site",
+      "Running initial Brand Perception probe and fact-checking against site facts",
+      "Inferring core market category & buyer use-case without naming your brand",
+      "Running unbranded category & use-case discovery probes (EN, HI, KN)",
+      "Running Brand Comparison & Trust deep-dive probes (up to 10 total probes)",
     ],
   },
   {
@@ -93,10 +91,10 @@ const STEPS: StepConfig[] = [
     badge: "Step 5 of 5",
     icon: <Calculator className="w-4 h-4" />,
     subtasks: [
-      "Applying 25% Technical + 75% AI Visibility composite score formula",
+      "Applying 35% Technical + 65% AI Visibility composite score formula",
       "Synthesizing spec-compliant /llms.txt with Gemini (deterministic builder as backup)",
       "Generating companion /llms-full.txt deep RAG context document",
-      "Compiling Otterly-style white-label agency executive action plan",
+      "Compiling executive scorecard and prioritized action plan",
     ],
   },
 ];
@@ -204,9 +202,9 @@ export default function AuditProgressPage() {
         }
 
         pollTimeout = setTimeout(poll, 1000);
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!isSubscribed) return;
-        setError(err.message || "Could not retrieve audit status.");
+        setError(err instanceof Error ? err.message : "Could not retrieve audit status.");
       }
     };
 
@@ -247,17 +245,17 @@ export default function AuditProgressPage() {
     }
 
     if (status === "querying_ai" || elapsed > 4.5) {
-      addLog("GEMINI", "Running separate probes (one Gemini call each, repeated for consistency)...", "text-amber-400");
-      addLog("AI_SIM", "Organic discovery: asking category questions without naming your brand...", "text-purple-400");
-      addLog("INDIC", "Repeating organic discovery in Hindi and Kannada...", "text-emerald-400");
-      addLog("ATTRIB", "Brand perception probe, then mention rate, rank, and competitor share of voice from the AI's own lists...", "text-cyan-400");
+      addLog("PERCEPT", "Stage 1: Running Brand Perception probe & fact-checking against extracted site facts...", "text-amber-400");
+      addLog("AI_SIM", "Stage 2: Running unbranded category & buyer use-case discovery probes (EN)...", "text-purple-400");
+      addLog("INDIC", "Repeating unbranded organic discovery in Hindi and Kannada...", "text-emerald-400");
+      addLog("DEEPDIVE", "Running brand comparison & buyer trust probes (capped at 10 total probes)...", "text-cyan-400");
     }
 
     if (status === "scoring" || elapsed > 7.0) {
-      addLog("SCORING", "Computing composite GEO score: (0.25 * Technical) + (0.75 * AI Visibility)...", "text-blue-400");
+      addLog("SCORING", "Computing composite GEO score: (0.35 * Technical) + (0.65 * AI Visibility)...", "text-blue-400");
       addLog("SYNTH", "Synthesizing authentic /llms.txt file conforming strictly to Howard (2024) spec...", "text-emerald-400");
       addLog("FULL", "Generating companion /llms-full.txt machine context file for deep RAG indexing...", "text-teal-400");
-      addLog("REPORT", "Assembling White-Label Agency executive scorecard and prioritized action plan...", "text-indigo-400");
+      addLog("REPORT", "Assembling executive scorecard and prioritized action plan...", "text-indigo-400");
     }
 
     if (status === "completed") {
@@ -397,7 +395,6 @@ export default function AuditProgressPage() {
                 {STEPS.map((step, idx) => {
                   const isCurrent = currentStatus === step.key;
                   const isPast = currentIndex > idx;
-                  const isPending = currentIndex < idx;
 
                   return (
                     <div

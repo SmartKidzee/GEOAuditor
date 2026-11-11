@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
-import { getAuditStatus } from "../../../lib/api";
+import { useParams, useRouter } from "next/navigation";
+import { createAudit, getAuditStatus } from "../../../lib/api";
 import { ReportData } from "../../../lib/types";
 import { Navbar } from "../../../components/Navbar";
 import { Footer } from "../../../components/Footer";
@@ -12,7 +12,7 @@ import { SolutionCard } from "../../../components/SolutionCard";
 import { ActionPlan } from "../../../components/ActionPlan";
 import { TechnicalSignals } from "../../../components/TechnicalSignals";
 import { AiVisibilityPanel } from "../../../components/AiVisibilityPanel";
-import { WhiteLabelReportModal } from "../../../components/WhiteLabelReportModal";
+import { ReportExportModal } from "../../../components/ReportExportModal";
 import {
   RotateCcw,
   AlertCircle,
@@ -21,19 +21,21 @@ import {
   Printer,
   Sparkles,
   BookOpen,
-  ArrowUpRight,
-  ExternalLink,
 } from "lucide-react";
 import Link from "next/link";
 
 export default function ReportPage() {
   const params = useParams();
+  const router = useRouter();
   const jobId = params?.id as string;
 
   const [report, setReport] = useState<ReportData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showWhiteLabelModal, setShowWhiteLabelModal] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [showHtmlUpload, setShowHtmlUpload] = useState(false);
+  const [manualHtml, setManualHtml] = useState("");
+  const [reAuditing, setReAuditing] = useState(false);
 
   useEffect(() => {
     if (!jobId) return;
@@ -59,9 +61,9 @@ export default function ReportPage() {
 
         setReport(jobStatus.report);
         setLoading(false);
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!isSubscribed) return;
-        setError(err.message || "Failed to load audit report.");
+        setError(err instanceof Error ? err.message : "Failed to load audit report.");
         setLoading(false);
       }
     }
@@ -138,7 +140,7 @@ export default function ReportPage() {
       <Navbar />
 
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-8 sm:py-12 space-y-8">
-        {/* Top Action Bar: White-Label Export & Quick Tools */}
+        {/* Top Action Bar: Report Export & Quick Tools */}
         <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-4 rounded-2xl shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-purple-100 dark:bg-purple-950/60 flex items-center justify-center text-purple-700 dark:text-purple-300 shrink-0">
@@ -147,14 +149,14 @@ export default function ReportPage() {
             <div>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-bold text-zinc-900 dark:text-zinc-50">
-                  Otterly.ai-Grade White-Label Agency Reporting
+                  Executive Audit Report &amp; Export
                 </span>
                 <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 border border-purple-200 dark:border-purple-800">
-                  Ready to Deliver
+                  Ready to Export
                 </span>
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-                Brand this audit with your agency name, custom executive notes, and export a clean PDF for clients.
+                Customize executive summary notes and export a clean PDF or JSON audit deliverable.
               </p>
             </div>
           </div>
@@ -169,11 +171,11 @@ export default function ReportPage() {
             </button>
 
             <button
-              onClick={() => setShowWhiteLabelModal(true)}
+              onClick={() => setShowExportModal(true)}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 transition cursor-pointer shadow-xs"
             >
               <FileText className="w-3.5 h-3.5" />
-              <span>White-Label Client Report</span>
+              <span>Export Audit Report</span>
             </button>
           </div>
         </div>
@@ -189,6 +191,62 @@ export default function ReportPage() {
           weightAiVisibility={report.weight_ai_visibility}
           aiAvailable={report.ai_visibility_available !== false}
         />
+
+        {/* Bot protection / human verification notice */}
+        {report.technical_findings?.crawl_blocked && (
+          <div className="bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 rounded-xl p-4 text-xs text-rose-900 dark:text-rose-200 space-y-3">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
+              <div className="flex-1">
+                <div className="font-bold">Site enforces human verification / anti-bot protection</div>
+                <p className="mt-0.5 leading-relaxed">
+                  {report.technical_findings.crawl_block_reason || "Automated HTML crawling was blocked (HTTP 403/503)."} GEOAuditor does not bypass CAPTCHAs or verification gates, so HTML tags and Schema.org could not be inspected automatically. AI Visibility was still measured directly via Gemini.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowHtmlUpload((v) => !v)}
+                  className="mt-2 font-semibold underline underline-offset-2 cursor-pointer"
+                >
+                  {showHtmlUpload
+                    ? "Hide manual HTML option"
+                    : "Want full HTML & Schema scoring? Complete verification in your browser and paste page source →"}
+                </button>
+              </div>
+            </div>
+
+            {showHtmlUpload && (
+              <div className="pl-7 space-y-2">
+                <textarea
+                  rows={4}
+                  value={manualHtml}
+                  onChange={(e) => setManualHtml(e.target.value)}
+                  placeholder="Open the website in your browser, press Cmd+U / Ctrl+U (View Page Source), copy and paste the HTML here..."
+                  className="w-full p-2.5 rounded-lg border border-rose-200 dark:border-rose-900 bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 font-mono text-[11px] outline-none"
+                />
+                <button
+                  type="button"
+                  disabled={reAuditing || !manualHtml.trim()}
+                  onClick={async () => {
+                    if (!manualHtml.trim()) return;
+                    setReAuditing(true);
+                    try {
+                      const res = await createAudit(report.url, {
+                        brand_name: report.brand_name,
+                        pasted_html: manualHtml.trim(),
+                      });
+                      router.push(`/audit/${res.job_id}`);
+                    } catch {
+                      setReAuditing(false);
+                    }
+                  }}
+                  className="px-3.5 py-1.5 rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-semibold text-xs cursor-pointer disabled:opacity-50"
+                >
+                  {reAuditing ? "Starting Re-Audit..." : "Re-Audit with Provided HTML"}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Honest-measurement banner: shown when the AI probes could not run */}
         {report.ai_visibility_available === false && (
@@ -287,11 +345,11 @@ export default function ReportPage() {
 
           <div className="flex items-center gap-3">
             <button
-              onClick={() => setShowWhiteLabelModal(true)}
+              onClick={() => setShowExportModal(true)}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold text-white bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 transition cursor-pointer"
             >
               <Printer className="w-3.5 h-3.5" />
-              <span>Export White-Label Report</span>
+              <span>Export Audit Report</span>
             </button>
 
             <Link
@@ -307,11 +365,11 @@ export default function ReportPage() {
 
       <Footer />
 
-      {/* White-Label Export Modal */}
-      <WhiteLabelReportModal
+      {/* Report Export Modal */}
+      <ReportExportModal
         report={report}
-        isOpen={showWhiteLabelModal}
-        onClose={() => setShowWhiteLabelModal(false)}
+        isOpen={showExportModal}
+        onClose={() => setShowExportModal(false)}
       />
     </div>
   );

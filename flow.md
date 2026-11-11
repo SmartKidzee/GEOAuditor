@@ -31,7 +31,7 @@
 Once `status === "completed"`, the frontend fetches the full report and renders:
 
 1. **Header** — Composite GEO Score (large, single number, 0–100), audited URL, timestamp.
-2. **Score Breakdown** — Technical Score and AI Visibility Score shown side by side with their 25/75 weighting made explicit (not hidden math).
+2. **Score Breakdown** — Technical Score and AI Visibility Score shown side by side with their 35/65 weighting made explicit (not hidden math).
 3. **Technical Signals panel** — pass/fail/warn per check (metadata, headings, JSON-LD/schema, robots.txt/sitemap, semantic HTML), each linking to the specific fix.
 4. **AI Visibility panel** — the 4 query intents (Brand Discovery, Category Search, Comparative Analysis, Market Alternatives), each showing whether/how the brand appeared, using the actual Gemini response evidence — not a synthetic "yes/no."
 5. **Action Plan** — issues grouped by severity (🔴 Critical / 🟡 Warning / 🟢 Opportunity), each with a concrete, specific fix tied to the exact signal that triggered it.

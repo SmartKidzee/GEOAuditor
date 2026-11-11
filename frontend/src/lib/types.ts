@@ -24,7 +24,7 @@ export interface TechnicalSignalCheck {
   score: number;
   max_score: number;
   details: string;
-  evidence: Record<string, any>;
+  evidence: Record<string, unknown>;
 }
 
 export interface TechnicalFindings {
@@ -36,11 +36,13 @@ export interface TechnicalFindings {
   extracted_brand: string;
   extracted_category: string;
   summary: string;
+  crawl_blocked?: boolean;
+  crawl_block_reason?: string | null;
 }
 
 export interface AiVisibilityQueryFinding {
   probe_id?: string;
-  probe_type?: "organic_discovery" | "brand_perception";
+  probe_type?: "organic_discovery" | "brand_perception" | "brand_comparison" | "brand_reputation";
   branded?: boolean;
   run_index?: number;
   intent_name: string;
@@ -157,6 +159,28 @@ export interface ReportData {
   created_at: string;
   completed_at?: string;
   literature_framework?: LiteratureFramework;
+}
+
+export interface BrandCandidate {
+  brand_name: string;
+  domain: string;
+  url: string;
+  description: string;
+}
+
+export interface BrandResolveResponse {
+  query: string;
+  is_direct_url: boolean;
+  candidates: BrandCandidate[];
+}
+
+export interface PreflightResponse {
+  url: string;
+  domain: string;
+  reachable: boolean;
+  blocked_by_waf: boolean;
+  status_code: number;
+  block_reason?: string | null;
 }
 
 export interface JobStatusResponse {

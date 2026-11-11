@@ -50,11 +50,11 @@ logger = logging.getLogger("geoauditor.ai_simulator")
 
 # Candidate models, tried in order after the configured GEMINI_MODEL.
 CANDIDATE_MODELS = [
-    "gemini-3.8-flash",
-    "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3-flash-preview",
     "gemini-3.1-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
 ]
 
 PERCEPTION_SCORES = {"accurate": 100.0, "partial": 60.0, "unknown": 15.0, "hallucinated": 5.0}
@@ -189,6 +189,9 @@ class GeminiClient:
                         # Still rate-limited: skip this model for a while.
                         self._cooldown[model] = time.monotonic() + self.COOLDOWN_SECONDS
                         break
+                    if code and code >= 500:
+                        # High demand / transient outage (e.g. 503): put on cooldown to avoid stalling every probe.
+                        self._cooldown[model] = time.monotonic() + self.COOLDOWN_SECONDS
                     break  # 5xx, network error -> next model
 
         self._last_error = last_error
@@ -464,7 +467,43 @@ def perception_prompt(brand_name: str, domain: str) -> str:
         f'A person asks an AI assistant: "{perception_question(brand_name, domain)}"\n'
         "Answer honestly. If you do not actually recognise this brand, say so. Do NOT guess or invent details.\n"
         'Respond ONLY with JSON: {"known": true or false, "description": "<2-3 sentence description, '
-        'empty if unknown>", "products_or_services": ["..."], "confidence": "high|medium|low"}'
+        'empty if unknown>", "products_or_services": ["..."], '
+        '"primary_category": "<3-6 word industry niche without naming the brand, empty if unknown>", '
+        '"primary_use_case": "<3-7 word main buyer problem/use-case without naming the brand, empty if unknown>", '
+        '"confidence": "high|medium|low"}'
+    )
+
+
+def brand_comparison_prompt(brand_name: str, domain: str, category: str) -> str:
+    return (
+        f"Compare {brand_name} ({domain}) against the top competing alternatives in {category}. "
+        "Where does it excel, where does it fall short, and which specific competitors are most often compared with it?\n"
+        'Respond ONLY with JSON: {"sentiment": "positive|neutral|negative", '
+        '"recommended": true or false, '
+        '"summary": "<2-3 sentence balanced comparison>", '
+        '"strengths": ["..."], "limitations": ["..."], '
+        '"alternatives": [{"name": "<competitor>", "website": "<domain or null>"}]}'
+    )
+
+
+def brand_reputation_prompt(brand_name: str, domain: str, use_case: str) -> str:
+    return (
+        f"A buyer evaluating solutions for {use_case} asks whether to choose {brand_name} ({domain}). "
+        "Assess its reputation, key trust signals, buyer fit, and caveats.\n"
+        'Respond ONLY with JSON: {"sentiment": "positive|neutral|negative", '
+        '"recommended": true or false, '
+        '"summary": "<2-3 sentence buyer recommendation and trust assessment>", '
+        '"trust_signals": ["..."], "caveats": ["..."]}'
+    )
+
+
+def resolve_brand_prompt(query: str) -> str:
+    return (
+        f'A user wants to audit the official website for the brand or company "{query}". '
+        "Identify the 1 to 3 most likely official websites for this brand.\n"
+        'Respond ONLY with JSON: {"candidates": [{"brand_name": "<official brand name>", '
+        '"domain": "<example.com>", "url": "https://<example.com>", '
+        '"description": "<one short sentence describing what this brand does>"}]}'
     )
 
 
@@ -475,11 +514,13 @@ def judge_prompt(description: str, site_facts: Dict[str, Any]) -> str:
         f"WEBSITE FACTS:\n{json.dumps(site_facts, ensure_ascii=False, indent=2)}\n\n"
         f"MODEL DESCRIPTION:\n{description}\n\n"
         "Verdict rules:\n"
-        '- "accurate": the core identity (what the company is and does) matches the website.\n'
-        '- "partial": broadly right but vague, outdated, or missing key points.\n'
+        '- "accurate": the core identity (what the company is and does) matches the website or accurately '
+        "describes the company's well-established primary product/service without contradicting the website "
+        "(even if the homepage hero highlights a newer marketing initiative or slogan).\n"
+        '- "partial": broadly right but vague, outdated, or missing key core identity.\n'
         '- "hallucinated": describes something materially different, or states specifics that '
         "contradict the website.\n"
-        "Judge only against the website facts. Missing detail is not an error; contradiction is.\n"
+        "Judge against the website facts. Missing marketing buzzwords is not an error; factual contradiction is.\n"
         'Respond ONLY with JSON: {"verdict": "accurate|partial|hallucinated", '
         '"wrong_claims": ["..."], "missing_facts": ["..."], "explanation": "<one sentence>"}'
     )
@@ -487,11 +528,23 @@ def judge_prompt(description: str, site_facts: Dict[str, Any]) -> str:
 
 def category_prompt(site_facts: Dict[str, Any]) -> str:
     return (
-        "Based ONLY on the website text below, name the market category this business competes in, "
-        "as a short generic phrase (3 to 7 words) that a buyer would type into a search engine, "
-        'for example "online payment gateways for small businesses". '
-        "Do NOT include the brand name.\n\n"
+        "Based ONLY on the website text below, name the established, mainstream market category this "
+        "business competes in, as a short generic phrase (3 to 7 words) that a real buyer would type "
+        "into a search engine or AI assistant. Look past homepage marketing slogans or buzzwords to "
+        "identify the core product category (for example, \"frontend cloud and web hosting platforms\", "
+        "\"online payment gateways for small businesses\", or \"project management software for teams\"). "
+        "Do NOT include the brand name. Optionally provide a second distinct buyer search phrase if the "
+        "company spans two core areas.\n\n"
         f"{json.dumps(site_facts, ensure_ascii=False, indent=2)}\n\n"
+        'Respond ONLY with JSON: {"category": "<primary phrase>", "secondary_category": "<optional second phrase or empty string>"}'
+    )
+
+
+def domain_category_prompt(brand_name: str, domain: str) -> str:
+    return (
+        f"The website {domain} (brand: {brand_name}) blocked automated HTML crawling. "
+        "What is the primary established market category this website competes in, as a short generic "
+        "phrase (3 to 7 words) that a buyer would type into an AI assistant without naming the brand? "
         'Respond ONLY with JSON: {"category": "<phrase>"}'
     )
 
@@ -547,8 +600,8 @@ def heuristic_perception(description: str, site_facts: Dict[str, Any]) -> Tuple[
 
 async def run_perception_probe(
     client: LLMClient, brand_name: str, domain: str, site_facts: Dict[str, Any]
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Returns (query_finding, perception_dict)."""
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, str]]:
+    """Returns (query_finding, perception_dict, inferred_hints)."""
     question = perception_question(brand_name, domain)
     base_perception: Dict[str, Any] = {
         "verdict": "unavailable",
@@ -562,6 +615,7 @@ async def run_perception_probe(
         "score": 0.0,
         "explanation": "",
     }
+    hints: Dict[str, str] = {"primary_category": "", "primary_use_case": ""}
 
     try:
         result = await client.generate(perception_prompt(brand_name, domain), json_mode=True, temperature=0.0)
@@ -571,13 +625,19 @@ async def run_perception_probe(
             intent_name="Brand Perception", question=question, language="en", error=str(exc),
         )
         base_perception["explanation"] = "AI check unavailable; perception was not measured."
-        return finding, base_perception
+        return finding, base_perception, hints
 
     parsed = parse_json_loose(result.text)
     if isinstance(parsed, dict):
         description = str(parsed.get("description") or "").strip()
         claimed_known = parsed.get("known")
         known = bool(claimed_known) if claimed_known is not None else bool(description)
+        raw_cat = sanitize_category(str(parsed.get("primary_category") or ""), brand_name)
+        raw_use = sanitize_category(str(parsed.get("primary_use_case") or ""), brand_name)
+        if len(raw_cat) >= 6:
+            hints["primary_category"] = raw_cat
+        if len(raw_use) >= 6:
+            hints["primary_use_case"] = raw_use
     else:
         # The model answered in prose instead of JSON. That is still its real answer: use it as
         # the description rather than mistaking a formatting failure for "the model doesn't know".
@@ -648,7 +708,7 @@ async def run_perception_probe(
         "language": "en",
         "language_name": LANGUAGES["en"],
     }
-    return finding, perception
+    return finding, perception, hints
 
 
 # --------------------------------------------------------------------------------------
@@ -663,9 +723,29 @@ def sanitize_category(category: str, brand_name: str) -> str:
     return cleaned[:80]
 
 
-async def infer_category(client: LLMClient, site_facts: Dict[str, Any], brand_name: str) -> Optional[str]:
+async def infer_categories(
+    client: LLMClient, site_facts: Dict[str, Any], brand_name: str
+) -> Tuple[Optional[str], Optional[str]]:
     try:
         result = await client.generate(category_prompt(site_facts), json_mode=True, temperature=0.0)
+    except LLMUnavailableError:
+        return None, None
+    parsed = parse_json_loose(result.text) or {}
+    primary = sanitize_category(str(parsed.get("category") or ""), brand_name)
+    secondary = sanitize_category(str(parsed.get("secondary_category") or ""), brand_name)
+    p = primary if len(primary) >= 6 else None
+    s = secondary if len(secondary) >= 6 and secondary.lower() != (p or "").lower() else None
+    return p, s
+
+
+async def infer_category(client: LLMClient, site_facts: Dict[str, Any], brand_name: str) -> Optional[str]:
+    primary, _ = await infer_categories(client, site_facts, brand_name)
+    return primary
+
+
+async def infer_category_from_domain(client: LLMClient, brand_name: str, domain: str) -> Optional[str]:
+    try:
+        result = await client.generate(domain_category_prompt(brand_name, domain), json_mode=True, temperature=0.0)
     except LLMUnavailableError:
         return None
     parsed = parse_json_loose(result.text) or {}
@@ -678,13 +758,22 @@ def build_site_facts(analyzed_content: Dict[str, Any]) -> Dict[str, Any]:
     metadata = analyzed_content.get("metadata", {}) or {}
     headings = analyzed_content.get("headings", {}) or {}
     nav = analyzed_content.get("navigation_links", []) or []
-    return {
+    schema = analyzed_content.get("schema", {}) or {}
+    semantic = analyzed_content.get("semantic_html", {}) or {}
+    facts: Dict[str, Any] = {
         "title": metadata.get("title", ""),
         "meta_description": metadata.get("meta_description", ""),
         "main_headings": (headings.get("h1_list") or [])[:3],
         "section_headings": (headings.get("h2_sample") or [])[:5],
         "navigation": [n.get("title", "") for n in nav[:8] if isinstance(n, dict)],
     }
+    schema_descs = schema.get("descriptions") or []
+    if schema_descs:
+        facts["schema_descriptions"] = schema_descs[:2]
+    body_excerpt = semantic.get("body_excerpt") or ""
+    if body_excerpt:
+        facts["body_excerpt"] = body_excerpt[:400]
+    return facts
 
 
 # --------------------------------------------------------------------------------------
@@ -705,6 +794,122 @@ def _unavailable_result(reason: str, category: str, category_source: str) -> Dic
     }
 
 
+MAX_TOTAL_PROBES = 10
+
+
+def _evaluate_branded_followup(
+    *,
+    probe_id: str,
+    probe_type: str,
+    intent_name: str,
+    question: str,
+    raw_text: str,
+    model_used: str,
+    matcher: BrandMatcher,
+) -> Dict[str, Any]:
+    """Evaluates a branded comparison or buyer-reputation follow-up probe."""
+    parsed = parse_json_loose(raw_text)
+    sentiment = "neutral"
+    recommended = False
+    summary = raw_text.strip()[:450]
+    competitors: List[str] = []
+
+    if isinstance(parsed, dict):
+        raw_sent = str(parsed.get("sentiment") or "neutral").lower().strip()
+        if raw_sent in ("positive", "neutral", "negative"):
+            sentiment = raw_sent
+        recommended = bool(parsed.get("recommended", False))
+        summary = str(parsed.get("summary") or summary).strip()
+        strengths = [str(x).strip() for x in (parsed.get("strengths") or parsed.get("trust_signals") or []) if str(x).strip()]
+        caveats = [str(x).strip() for x in (parsed.get("limitations") or parsed.get("caveats") or []) if str(x).strip()]
+        if strengths:
+            summary += f" Strengths: {'; '.join(strengths[:3])}."
+        if caveats:
+            summary += f" Caveats: {'; '.join(caveats[:2])}."
+        for entry in parsed.get("alternatives") or []:
+            if isinstance(entry, dict):
+                name = str(entry.get("name") or "").strip()
+                website = entry.get("website")
+                if name and not matcher.matches(name, website):
+                    competitors.append(name)
+            elif isinstance(entry, str) and entry.strip() and not matcher.matches(entry.strip(), None):
+                competitors.append(entry.strip())
+
+    score = 90.0 if (sentiment == "positive" and recommended) else (75.0 if sentiment == "positive" else (55.0 if sentiment == "neutral" else 25.0))
+
+    return {
+        "probe_id": probe_id,
+        "probe_type": probe_type,
+        "branded": True,
+        "run_index": 1,
+        "intent_name": intent_name,
+        "query": question,
+        "status": "ok",
+        "error": None,
+        "model_used": model_used,
+        "mentioned": True,
+        "rank": None,
+        "sentiment": sentiment,
+        "position": "primary" if recommended else "listed",
+        "score": score,
+        "evidence_excerpt": summary or "No summary returned.",
+        "raw_response": raw_text,
+        "recommended": recommended,
+        "cited_brand_domain": True,
+        "cited_competitors": competitors[:6],
+        "language": "en",
+        "language_name": LANGUAGES["en"],
+    }
+
+
+async def resolve_brand_websites(query: str, client: Optional[LLMClient] = None) -> Dict[str, Any]:
+    """Resolves a brand name into candidate official websites for user confirmation."""
+    cleaned = (query or "").strip()
+    if not cleaned:
+        return {"query": "", "is_direct_url": False, "candidates": []}
+
+    if client is None:
+        api_key = get_gemini_api_key()
+        if not api_key or "your_gemini_api_key" in api_key:
+            return {"query": cleaned, "is_direct_url": False, "candidates": []}
+        client = GeminiClient(api_key=api_key)
+
+    try:
+        res = await client.generate(resolve_brand_prompt(cleaned), json_mode=True, temperature=0.0)
+        parsed = parse_json_loose(res.text) or {}
+        raw_candidates = parsed.get("candidates") if isinstance(parsed, dict) else []
+    except Exception:  # noqa: BLE001
+        raw_candidates = []
+
+    candidates: List[Dict[str, str]] = []
+    seen_domains: set = set()
+    for item in raw_candidates if isinstance(raw_candidates, list) else []:
+        if not isinstance(item, dict):
+            continue
+        raw_url = str(item.get("url") or item.get("domain") or "").strip()
+        if not raw_url or "." not in raw_url:
+            continue
+        if not raw_url.startswith("http://") and not raw_url.startswith("https://"):
+            raw_url = f"https://{raw_url}"
+        parsed_u = urlparse(raw_url)
+        dom = (parsed_u.netloc or "").lower().lstrip("www.")
+        if not dom or dom in seen_domains:
+            continue
+        seen_domains.add(dom)
+        candidates.append(
+            {
+                "brand_name": str(item.get("brand_name") or cleaned).strip()[:80],
+                "domain": dom,
+                "url": f"https://{parsed_u.netloc}",
+                "description": str(item.get("description") or "").strip()[:220],
+            }
+        )
+        if len(candidates) >= 3:
+            break
+
+    return {"query": cleaned, "is_direct_url": False, "candidates": candidates}
+
+
 async def run_ai_visibility_queries(
     brand_name: str,
     domain: str,
@@ -713,10 +918,12 @@ async def run_ai_visibility_queries(
     *,
     site_facts: Optional[Dict[str, Any]] = None,
     category_override: Optional[str] = None,
+    blocked_by_waf: bool = False,
     client: Optional[LLMClient] = None,
 ) -> Dict[str, Any]:
     """
-    Runs all probes and returns raw measurements (scored later by scoring.py).
+    Runs all probes in two stages (perception first, then up to 10 total probes)
+    and returns raw measurements (scored later by scoring.py).
 
     `meta_description` is accepted for backwards compatibility but is deliberately NOT sent
     to the model: the model must answer from its own knowledge, not from the site's copy.
@@ -733,58 +940,136 @@ async def run_ai_visibility_queries(
             )
         client = GeminiClient(api_key=api_key)
 
-    # 1. Category used for the unbranded prompts
+    matcher = BrandMatcher(brand_name, domain)
+
+    # Stage 1: ALWAYS run Brand Perception first so we guarantee it runs and we learn
+    # what the AI thinks the brand is before choosing follow-up brand-aware probes.
+    perception_finding, perception, perception_hints = await run_perception_probe(
+        client, brand_name, domain, site_facts
+    )
+
+    # Category resolution (brand-free for unbranded organic discovery)
     category_source = "heuristic"
     category_used = category
+    secondary_category: Optional[str] = None
     if category_override and category_override.strip():
         category_used, category_source = sanitize_category(category_override, brand_name), "user"
-    else:
-        inferred = await infer_category(client, site_facts, brand_name) if site_facts else None
-        if inferred:
-            category_used, category_source = inferred, "gemini"
+    elif site_facts_text(site_facts).strip():
+        inferred_primary, inferred_secondary = await infer_categories(client, site_facts, brand_name)
+        if inferred_primary:
+            category_used, category_source = inferred_primary, "gemini"
+            secondary_category = inferred_secondary
+    elif blocked_by_waf:
+        hint_cat = perception_hints.get("primary_category")
+        if hint_cat:
+            category_used, category_source = hint_cat, "gemini"
+        else:
+            inferred_domain = await infer_category_from_domain(client, brand_name, domain)
+            if inferred_domain:
+                category_used, category_source = inferred_domain, "gemini"
 
     if not category_used.strip():
         category_used, category_source = "products and services", "heuristic"
 
-    # 2. Plan probes: N English runs, plus Hindi and Kannada
-    matcher = BrandMatcher(brand_name, domain)
+    # Secondary buyer use-case (never contains brand name)
+    use_case_used = (
+        perception_hints.get("primary_use_case")
+        or secondary_category
+        or category_used
+    )
+    if use_case_used.lower() == category_used.lower() and secondary_category:
+        use_case_used = secondary_category
+
+    # Stage 2: Plan remaining probes, strictly capped at MAX_TOTAL_PROBES (10 total including perception#1)
     runs_en, runs_indic = get_probe_runs(), get_indic_runs()
     temperature = get_probe_temperature()
-    planned: List[Tuple[str, int, str]] = []
-    planned += [("en", i, f"organic_en#{i}") for i in range(1, runs_en + 1)]
-    planned += [("hi", i, f"organic_hi#{i}") for i in range(1, runs_indic + 1)]
-    planned += [("kn", i, f"organic_kn#{i}") for i in range(1, runs_indic + 1)]
+
+    planned_organic: List[Tuple[str, int, str, str, str]] = []
+    # Core category English runs (2) + Use-case English runs (2) up to max 4 English unbranded probes
+    primary_en_count = min(2, runs_en)
+    for i in range(1, primary_en_count + 1):
+        planned_organic.append(("en", i, f"organic_en#{i}", category_used, "Organic Discovery (English)"))
+
+    usecase_count = 2 if runs_en >= 2 else 1
+    for j in range(1, usecase_count + 1):
+        idx = primary_en_count + j
+        planned_organic.append(("en", idx, f"organic_usecase#{j}", use_case_used, "Buyer Use-Case Discovery (English)"))
+
+    for i in range(1, runs_indic + 1):
+        planned_organic.append(("hi", i, f"organic_hi#{i}", category_used, "Organic Discovery (Hindi)"))
+    for i in range(1, runs_indic + 1):
+        planned_organic.append(("kn", i, f"organic_kn#{i}", category_used, "Organic Discovery (Kannada)"))
+
+    # Reserve 2 slots for prominent brand-related probes (Comparison & Buyer Trust/Reputation)
+    # while keeping total probes strictly <= MAX_TOTAL_PROBES (10).
+    max_organic_slots = max(1, MAX_TOTAL_PROBES - 3)
+    planned_organic = planned_organic[:max_organic_slots]
 
     semaphore = asyncio.Semaphore(get_probe_concurrency())
 
-    async def run_organic(language: str, run_index: int, probe_id: str) -> Dict[str, Any]:
-        question = organic_question(language, category_used)
+    async def run_organic(language: str, run_index: int, probe_id: str, cat: str, intent_name: str) -> Dict[str, Any]:
+        question = organic_question(language, cat)
         async with semaphore:
             try:
                 result = await client.generate(
-                    organic_prompt(language, category_used), json_mode=True, temperature=temperature
+                    organic_prompt(language, cat), json_mode=True, temperature=temperature
                 )
             except LLMUnavailableError as exc:
                 return unavailable_finding(
                     probe_id=probe_id, probe_type="organic_discovery", branded=False, run_index=run_index,
-                    intent_name=f"Organic Discovery ({language_short(language)})",
-                    question=question, language=language, error=str(exc),
+                    intent_name=intent_name, question=question, language=language, error=str(exc),
                 )
-        return evaluate_organic_answer(
+        finding = evaluate_organic_answer(
             probe_id=probe_id, run_index=run_index, language=language, question=question,
             raw_text=result.text, model_used=result.model, matcher=matcher,
         )
+        finding["intent_name"] = intent_name
+        return finding
 
-    async def run_perception() -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    async def run_brand_comparison() -> Dict[str, Any]:
+        question = f"How does {brand_name} ({domain}) compare against top competitors in {category_used}?"
         async with semaphore:
-            return await run_perception_probe(client, brand_name, domain, site_facts)
+            try:
+                result = await client.generate(
+                    brand_comparison_prompt(brand_name, domain, category_used), json_mode=True, temperature=0.2
+                )
+            except LLMUnavailableError as exc:
+                return unavailable_finding(
+                    probe_id="brand_comparison#1", probe_type="brand_comparison", branded=True, run_index=1,
+                    intent_name="Brand Comparison & Alternatives", question=question, language="en", error=str(exc),
+                )
+        return _evaluate_branded_followup(
+            probe_id="brand_comparison#1", probe_type="brand_comparison",
+            intent_name="Brand Comparison & Alternatives", question=question,
+            raw_text=result.text, model_used=result.model, matcher=matcher,
+        )
 
-    organic_results, (perception_finding, perception) = await asyncio.gather(
-        asyncio.gather(*[run_organic(lang, idx, pid) for lang, idx, pid in planned]),
-        run_perception(),
+    async def run_brand_reputation() -> Dict[str, Any]:
+        question = f"Should a buyer choose {brand_name} ({domain}) for {use_case_used}? Trust signals & caveats"
+        async with semaphore:
+            try:
+                result = await client.generate(
+                    brand_reputation_prompt(brand_name, domain, use_case_used), json_mode=True, temperature=0.2
+                )
+            except LLMUnavailableError as exc:
+                return unavailable_finding(
+                    probe_id="brand_reputation#1", probe_type="brand_reputation", branded=True, run_index=1,
+                    intent_name="Brand Trust & Buyer Fit", question=question, language="en", error=str(exc),
+                )
+        return _evaluate_branded_followup(
+            probe_id="brand_reputation#1", probe_type="brand_reputation",
+            intent_name="Brand Trust & Buyer Fit", question=question,
+            raw_text=result.text, model_used=result.model, matcher=matcher,
+        )
+
+    organic_results, comparison_res, reputation_res = await asyncio.gather(
+        asyncio.gather(*[run_organic(lang, idx, pid, cat, iname) for lang, idx, pid, cat, iname in planned_organic]),
+        run_brand_comparison(),
+        run_brand_reputation(),
     )
 
-    queries = list(organic_results) + [perception_finding]
+    queries = [perception_finding] + list(organic_results) + [comparison_res, reputation_res]
+    queries = queries[:MAX_TOTAL_PROBES]
     first_error = next((q["error"] for q in queries if q["status"] == "unavailable"), None)
     models_used = getattr(client, "models_used", None)
 

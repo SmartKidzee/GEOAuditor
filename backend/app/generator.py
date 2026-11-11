@@ -251,14 +251,16 @@ CRITICAL SPECIFICATION REQUIREMENTS (llmstxt.org / Howard 2024):
 5. Section: '## Optional Notes & Technical Context' for developer documentation, APIs, and authoritative references.
 6. Format must be 100% clean markdown. Do NOT wrap output inside ```markdown or ``` code fences. Output the raw text of the file directly."""
 
-    # Candidate models in user-requested fallback order: 3.8 -> 3.6 -> 3.5 -> 3-preview -> 3.1-lite
+    # Candidate models: working flash models first, then configured/fallback variants
     candidate_models = [
-        "gemini-3.8-flash",
-        "gemini-3.6-flash",
+        configured_model,
         "gemini-3.5-flash",
         "gemini-3-flash-preview",
         "gemini-3.1-flash-lite",
+        "gemini-3.8-flash",
     ]
+    # Deduplicate preserving order
+    candidate_models = list(dict.fromkeys(m for m in candidate_models if m))
 
     if api_key and "your_gemini_api_key" not in api_key:
         client = genai.Client(api_key=api_key)

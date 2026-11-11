@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useMemo } from "react";
 import { Share2, Check, ExternalLink } from "lucide-react";
 
 interface ScoreGaugeProps {
@@ -20,8 +20,8 @@ export function ScoreGauge({
   domain,
   brandName,
   createdAt,
-  weightTechnical = 0.25,
-  weightAiVisibility = 0.75,
+  weightTechnical = 0.35,
+  weightAiVisibility = 0.65,
   aiAvailable = true,
 }: ScoreGaugeProps) {
   const [copied, setCopied] = useState(false);
@@ -39,23 +39,18 @@ export function ScoreGauge({
     return "Critical AI Visibility & Technical Gaps";
   };
 
-  const [formattedDate, setFormattedDate] = useState<string>("");
-
-  useEffect(() => {
-    if (createdAt) {
-      try {
-        setFormattedDate(
-          new Date(createdAt).toLocaleDateString("en-US", {
-            month: "short",
-            day: "numeric",
-            year: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-          })
-        );
-      } catch {
-        setFormattedDate(createdAt);
-      }
+  const formattedDate = useMemo(() => {
+    if (!createdAt) return "";
+    try {
+      return new Date(createdAt).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return createdAt;
     }
   }, [createdAt]);
 

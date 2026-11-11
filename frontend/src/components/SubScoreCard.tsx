@@ -112,9 +112,9 @@ export function SubScoreCard({
 
         <div className="mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-800 text-[11px] text-zinc-500 dark:text-zinc-400 flex flex-wrap gap-x-3 gap-y-1">
           <span>• Organic Discovery (35%)</span>
-          <span>• Hindi &amp; Kannada (15%)</span>
+          <span>• Hindi &amp; Kannada (10%)</span>
           <span>• Rank (15%)</span>
-          <span>• Brand Perception (25%)</span>
+          <span>• Brand Perception (30%)</span>
           <span>• Domain Citation (10%)</span>
         </div>
       </div>

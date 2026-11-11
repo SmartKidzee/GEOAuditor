@@ -5,7 +5,7 @@ These are practical guardrails for whoever (human or AI) is building this, not a
 ## 1. General Approach
 
 - Build only what's in `PRD.md`'s scope. Don't scaffold future-roadmap features (monitoring, multi-brand comparison, history tracking, auto-fix generation) "just in case" — they add complexity for nothing being used yet.
-- Prefer the simplest implementation that actually works over a clever/optimized one. This is an MVP — correctness and clarity beat premature optimization.
+- Prefer the simplest implementation that actually works over a clever/optimized one — correctness and clarity beat premature optimization.
 - No mocked or hardcoded data anywhere in the shipped app. Every score, every finding, every AI-visibility result must come from a real scrape + a real Gemini call. If Gemini or the scraper fails, surface a real error — don't fall back to fake-but-plausible data.
 - No decorative-only code — every animation, every displayed number, every link must map to something real. (See `design.md` §1 for the full "no AI slop" list — this is a build rule, not just a visual one.)
 

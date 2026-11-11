@@ -98,14 +98,14 @@ def test_pipeline_with_ai_probes_scores_and_persists_real_measurements(db, monke
     f = report["ai_visibility_findings"]
 
     assert report["ai_visibility_available"] is True
-    assert f["organic_runs"] == 3 and f["organic_mentions"] == 3
+    assert f["organic_runs"] == 4 and f["organic_mentions"] == 4
     assert f["perception"]["verdict"] == "accurate"
     assert f["category_source"] == "gemini"
     assert report["composite_score"] == pytest.approx(
-        0.25 * report["technical_score"] + 0.75 * report["ai_visibility_score"], abs=0.1
+        0.35 * report["technical_score"] + 0.65 * report["ai_visibility_score"], abs=0.1
     )
-    # every query row is a real (scripted) call: 3 EN + HI + KN organic + 1 perception
-    assert len(f["queries"]) == 6 and all(q["status"] == "ok" for q in f["queries"])
+    # 1 perception + 4 EN organic + 1 HI + 1 KN + 2 branded follow-up = 9 probes (<= 10 limit)
+    assert len(f["queries"]) == 9 and all(q["status"] == "ok" for q in f["queries"])
 
 
 def test_brand_and_category_overrides_flow_through_to_the_probes(db, monkeypatch):
@@ -137,3 +137,39 @@ def test_api_passes_optional_overrides_to_the_pipeline(monkeypatch):
     captured.clear()
     client.post("/api/audit", json={"url": "https://example.com"})
     assert captured == {"brand": None, "category": None}
+
+
+def test_waf_503_human_verification_completes_gracefully(db, monkeypatch):
+    async def waf_crawl(target):
+        return {
+            "url": "https://protected.example/",
+            "base_url": "https://protected.example",
+            "domain": "protected.example",
+            "status_code": 503,
+            "blocked_by_waf": True,
+            "block_status_code": 503,
+            "block_reason": "Cloudflare human verification challenge",
+            "html": "",
+            "robots_txt": {"exists": True, "status_code": 200, "content": "User-agent: *\nAllow: /"},
+            "sitemap_xml": {"exists": False, "status_code": 503, "content": ""},
+            "llms_txt": {"exists": False, "status_code": 503, "content": ""},
+        }
+
+    real = run_ai_visibility_queries
+
+    async def with_client(**kwargs):
+        return await real(client=ScriptedClient(), **kwargs)
+
+    monkeypatch.setattr(orchestrator, "crawl_site", waf_crawl)
+    monkeypatch.setattr(orchestrator, "run_ai_visibility_queries", with_client)
+
+    database.create_job("job-waf", "https://protected.example")
+    asyncio.run(orchestrator.run_audit_pipeline("job-waf", "https://protected.example"))
+    job = database.get_job("job-waf")
+    result = database.get_audit_result("job-waf")
+    assert job["status"] == JobStatus.COMPLETED.value
+    report = result["report"]
+    assert report["technical_findings"]["crawl_blocked"] is True
+    assert "Cloudflare" in report["technical_findings"]["crawl_block_reason"]
+    assert report["ai_visibility_available"] is True
+    assert any("Blocks Automated Crawlers" in i["title"] for i in report["issues"])

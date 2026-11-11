@@ -72,5 +72,5 @@ Audits are slow (network fetch + multiple AI calls), so the API never blocks a r
 ## 6. Why This Shape
 
 - Keeping the Scoring Engine as a pure function over stored findings (rather than baking scoring into the scraper or the AI-query step) makes the "how is this number calculated" transparent and testable — matches the product's "transparent and rule-based" positioning.
-- SQLite is sufficient at this stage: single-writer job table, no concurrent-write contention expected for an MVP. Move to Postgres only if/when real concurrent load justifies it — don't pre-build for scale that doesn't exist yet.
-- No queue infrastructure (Celery/Redis/etc.) for the MVP — FastAPI background tasks are enough for single-worker, one-audit-at-a-time-ish load. Revisit only if real usage demands it.
+- SQLite is sufficient at this stage: single-writer job table, no concurrent-write contention expected for this scale. Move to Postgres only if/when real concurrent load justifies it — don't pre-build for scale that doesn't exist yet.
+- No queue infrastructure (Celery/Redis/etc.) needed — FastAPI background tasks are enough for single-worker, one-audit-at-a-time-ish load. Revisit only if real usage demands it.

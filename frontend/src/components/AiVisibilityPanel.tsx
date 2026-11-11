@@ -26,7 +26,7 @@ interface AiVisibilityPanelProps {
   brandName: string;
 }
 
-type Tab = "runs" | "perception" | "languages" | "competitors" | "breakdown";
+type Tab = "runs" | "brand_deep_dive" | "perception" | "languages" | "competitors" | "breakdown";
 
 const VERDICT_STYLES: Record<PerceptionVerdict, { label: string; cls: string; blurb: string }> = {
   accurate: {
@@ -95,6 +95,9 @@ export function AiVisibilityPanel({ findings, brandName }: AiVisibilityPanelProp
   const organicRuns = (findings.queries || []).filter(
     (q) => (q.probe_type ?? "organic_discovery") === "organic_discovery"
   );
+  const deepDiveRuns = (findings.queries || []).filter(
+    (q) => q.probe_type === "brand_comparison" || q.probe_type === "brand_reputation"
+  );
   const perception = findings.perception ?? null;
   const verdictStyle = VERDICT_STYLES[(perception?.verdict ?? "unavailable") as PerceptionVerdict];
   const competitorSov = findings.competitor_share_of_voice || {};
@@ -107,7 +110,8 @@ export function AiVisibilityPanel({ findings, brandName }: AiVisibilityPanelProp
   const legacy = (findings.queries || []).some((q) => !q.probe_id);
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
-    { id: "runs", label: `Organic Discovery Runs (${organicRuns.length})`, icon: <MessageSquareQuote className="w-3.5 h-3.5" /> },
+    { id: "runs", label: `Organic Discovery (${organicRuns.length})`, icon: <MessageSquareQuote className="w-3.5 h-3.5" /> },
+    { id: "brand_deep_dive", label: `Brand Deep-Dive (${deepDiveRuns.length})`, icon: <Sparkles className="w-3.5 h-3.5" /> },
     { id: "perception", label: "Brand Perception", icon: <ShieldCheck className="w-3.5 h-3.5" /> },
     { id: "languages", label: "Languages", icon: <Languages className="w-3.5 h-3.5" /> },
     { id: "competitors", label: "Share of Voice", icon: <BarChart3 className="w-3.5 h-3.5" /> },
@@ -253,6 +257,27 @@ export function AiVisibilityPanel({ findings, brandName }: AiVisibilityPanelProp
         </div>
       )}
 
+      {/* Always-visible Brand Perception highlight */}
+      {perception && perception.verdict !== "unavailable" && (
+        <div className="px-5 py-3.5 bg-zinc-50/70 dark:bg-zinc-950/60 border-b border-zinc-100 dark:border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+          <div className="min-w-0">
+            <span className="font-semibold text-zinc-800 dark:text-zinc-200">Brand Perception Probe: </span>
+            <span className="text-zinc-600 dark:text-zinc-400">
+              {perception.model_description
+                ? perception.model_description.slice(0, 180) + (perception.model_description.length > 180 ? "..." : "")
+                : verdictStyle.blurb}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveTab("perception")}
+            className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline shrink-0 cursor-pointer text-left"
+          >
+            Inspect perception &amp; fact-check →
+          </button>
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="border-b border-zinc-200 dark:border-zinc-800 px-5 pt-3 flex gap-4 text-xs font-medium overflow-x-auto">
         {tabs.map((t) => (
@@ -362,6 +387,100 @@ export function AiVisibilityPanel({ findings, brandName }: AiVisibilityPanelProp
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Tab: brand deep-dive (comparison & reputation) */}
+      {activeTab === "brand_deep_dive" && (
+        <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+          {deepDiveRuns.length === 0 ? (
+            <div className="p-6 text-xs text-zinc-500">
+              No brand comparison or buyer-fit deep-dive probes were recorded for this audit. Re-run the audit to include them.
+            </div>
+          ) : (
+            deepDiveRuns.map((q, idx) => {
+              const id = q.probe_id || `deep-${idx}`;
+              const isExp = expanded[id];
+              return (
+                <div key={id} className="p-5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{q.intent_name}</h3>
+                      {q.status === "unavailable" ? (
+                        <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full border bg-zinc-100 text-zinc-600 border-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:border-zinc-700">
+                          Unavailable
+                        </span>
+                      ) : (
+                        <span
+                          className={`text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full border ${
+                            q.sentiment === "positive"
+                              ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-800"
+                              : q.sentiment === "negative"
+                              ? "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-400 dark:border-rose-800"
+                              : "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800"
+                          }`}
+                        >
+                          Sentiment: {q.sentiment}
+                        </span>
+                      )}
+                      {q.recommended && (
+                        <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800">
+                          Recommended by AI
+                        </span>
+                      )}
+                    </div>
+                    {q.raw_response && (
+                      <button
+                        onClick={() => toggle(id)}
+                        className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-200 font-medium px-2 py-1 rounded bg-zinc-50 dark:bg-zinc-800 cursor-pointer"
+                      >
+                        <span>{isExp ? "Hide Response" : "View AI Response"}</span>
+                        {isExp ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400 font-mono bg-zinc-50 dark:bg-zinc-950 p-2.5 rounded border border-zinc-100 dark:border-zinc-800/80">
+                    <span className="text-zinc-400 font-sans font-semibold">Brand Prompt: </span>
+                    &quot;{q.query}&quot;
+                  </div>
+
+                  <div className="mt-3 bg-zinc-950 text-zinc-200 p-3.5 rounded-lg border border-zinc-800 font-mono text-xs leading-relaxed">
+                    <p>{q.evidence_excerpt}</p>
+                    {q.status === "unavailable" && q.error && (
+                      <p className="mt-1 text-[11px] text-zinc-500">Reason: {q.error}</p>
+                    )}
+                  </div>
+
+                  {q.cited_competitors && q.cited_competitors.length > 0 && (
+                    <div className="mt-2.5 flex items-center gap-2 text-xs">
+                      <span className="text-zinc-400 font-medium text-[11px]">Alternatives compared:</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {q.cited_competitors.map((comp) => (
+                          <span
+                            key={comp}
+                            className="px-2 py-0.5 rounded text-[10px] font-mono bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
+                          >
+                            {comp}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {isExp && (
+                    <div className="mt-3 bg-zinc-900 text-zinc-300 p-4 rounded-lg border border-zinc-800 text-xs font-mono max-h-72 overflow-y-auto leading-relaxed">
+                      <div className="text-[10px] uppercase font-sans font-bold text-zinc-400 mb-2 flex items-center justify-between">
+                        <span>Full model response (raw)</span>
+                        <span className="font-mono text-zinc-500">{q.model_used}</span>
+                      </div>
+                      <div className="whitespace-pre-wrap text-[11px] text-zinc-300">{q.raw_response}</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
       )}
 
